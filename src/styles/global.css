@@ -1,0 +1,893 @@
+/* ===========================================================================
+   mtape — a browser-native multitrack tape recorder and arranger.
+
+   ART DIRECTION · "Portastudio"
+   The four-track cassette deck a song is written on at 2am — the machine whose
+   whole culture is "record what you played, bounce a song." A warm brushed-metal
+   chassis under low tungsten light; readouts sit in dark inset wells that glow
+   like backlit meter faces. Colour is spent ONLY where a real deck spends it:
+   incandescent amber lamps, record red, phosphor-green play/VU, and the VU
+   legend running green → amber → red toward the ceiling. Not a dark dashboard
+   with one accent — a piece of equipment. Everything matte, mechanical, quiet.
+
+   TYPOGRAPHY is the personality. Two authored machine-room voices:
+   --font-display  Saira Condensed — a technical condensed grotesque, the
+                   lettering stamped onto the faceplate: the MTAPE nameplate,
+                   channel numbers, section labels. Loud, tight, sparing.
+   --font-data     IBM Plex Mono — a grid-built technical monospace. Every lit
+                   readout, meter scale, tape counter, tempo, and dB number lives
+                   here, tracked wide like a screen-printed legend.
+   =========================================================================== */
+
+:root {
+  color-scheme: dark;
+
+  /* Warm brushed-metal chassis — matte, deep, tobacco-brown-black. Not flat
+     black: every surface carries a faint tungsten warmth. */
+  --ink: #0b0906;
+  --panel: #17130d;
+  --panel-2: #1f1810;
+  --raised: #2a2114;
+  --line: #362b1c;
+  --line-bright: #4d3f28;
+
+  /* Warm bone legend on a dark plate. Body text clears WCAG AA on --panel. */
+  --text: #ede6d6;
+  --muted: #a1957c;
+  --faint: #6f6650;
+
+  /* Functional colours borrowed from the gear itself — lamps and meters, not a
+     decorative accent scheme. Amber = incandescent lamp / tape path; record red;
+     phosphor green = play/VU-safe; the VU legend runs green → amber → red. */
+  --amber: #f2a83d;
+  --amber-bright: #ffc24b;
+  --red: #ff4438;
+  --record: #ff3b30;
+  --green: #79d98d;
+  --play: #6bd884;
+  --cyan: #5bb8ad; /* cool lit indicator — monitor / tape / varispeed */
+
+  --vu-green: #6fcf84;
+  --vu-amber: #ffd23f;
+  --vu-red: #ff5941;
+
+  --accent: var(--amber);
+  --focus: var(--amber-bright);
+  --danger: var(--record);
+  --safe: var(--play);
+
+  /* Material tokens — the two cues that keep this a machine, not a dashboard:
+     a brushed-metal panel surface and a dark inset "lit well" for readouts. */
+  --readout-bg: #0c0e08;
+  --readout-glow: 0 0 12px rgba(242, 168, 61, 0.22);
+  --brushed: repeating-linear-gradient(
+    100deg,
+    rgba(255, 240, 210, 0.014) 0px,
+    rgba(255, 240, 210, 0.014) 1px,
+    rgba(0, 0, 0, 0) 1px,
+    rgba(0, 0, 0, 0) 3px
+  );
+  --bevel: inset 0 1px 0 rgba(255, 226, 180, 0.05), inset 0 -1px 0 rgba(0, 0, 0, 0.45);
+  --well: inset 0 2px 5px rgba(0, 0, 0, 0.7), inset 0 0 0 1px rgba(0, 0, 0, 0.5);
+
+  /* Hardware controls read as slightly squared, not pill-soft. */
+  --radius: 6px;
+  --radius-sm: 4px;
+  --tap: 44px;
+
+  --font-display: 'Saira Condensed', 'Arial Narrow', system-ui, sans-serif;
+  --font-data: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+
+  /* Calibrated type scale (major-third-ish, clamped for small screens). */
+  --step--1: clamp(0.72rem, 0.68rem + 0.2vw, 0.8rem);
+  --step-0: clamp(0.84rem, 0.8rem + 0.2vw, 0.94rem);
+  --step-1: clamp(1.0rem, 0.92rem + 0.4vw, 1.2rem);
+  --step-2: clamp(1.3rem, 1.1rem + 0.9vw, 1.75rem);
+  --step-3: clamp(1.9rem, 1.5rem + 1.9vw, 2.9rem);
+
+  /* Screen-printed legend tracking. */
+  --track-label: 0.16em;
+  --track-nameplate: 0.28em;
+
+  --shadow-panel: 0 1px 0 rgba(255, 220, 170, 0.03) inset, 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  /* Brushed-metal grain over the warm chassis — barely-there, felt not seen. */
+  background: var(--brushed), var(--ink);
+  color: var(--text);
+  font-family: var(--font-data);
+  font-size: var(--step-0);
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overscroll-behavior: none;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  line-height: 1.05;
+  margin: 0;
+  letter-spacing: 0.01em;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+  border: 1px solid var(--line-bright);
+  /* A physical, slightly-domed metal key rather than a flat rectangle. */
+  background: linear-gradient(var(--raised), var(--panel-2));
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  padding: 0.5em 0.9em;
+  min-height: var(--tap);
+  box-shadow: var(--bevel);
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+
+button:active:not(:disabled) {
+  /* Pressed: the key sinks into the chassis. */
+  background: linear-gradient(var(--panel-2), var(--raised));
+  box-shadow: var(--well);
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* Screen-printed silkscreen label. */
+.label {
+  font-family: var(--font-data);
+  font-size: var(--step--1);
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.nameplate {
+  font-family: var(--font-display);
+  letter-spacing: var(--track-nameplate);
+  text-transform: uppercase;
+}
+
+/* A brushed instrument panel with a faint machined bevel. */
+.panel {
+  background: var(--brushed), linear-gradient(var(--panel), var(--panel-2));
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-panel), var(--bevel);
+}
+
+/* A dark inset well for lit readouts — the backlit meter/counter face. Opt-in:
+   add alongside .readout where a glowing display is wanted. */
+.well {
+  background: var(--readout-bg);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--well);
+}
+
+/* Tabular numeric readout (meters, counters). */
+.readout {
+  font-family: var(--font-data);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+
+/* Transport / state accent helpers. */
+.is-record {
+  color: var(--record);
+}
+.is-armed {
+  color: var(--vu-red);
+}
+.is-play {
+  color: var(--play);
+}
+
+/* Visually hidden but available to assistive tech. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ===========================================================================
+   COMPONENT LAYER — the deck's panels, built on the tokens above. Warm matte
+   housing, screen-printed labels, VU-legend meters, lit transport.
+   =========================================================================== */
+
+.app {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 100%;
+  padding: 12px clamp(8px, 2vw, 20px) 24px;
+  max-width: 1600px;
+  margin: 0 auto;
+}
+
+.app__header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 16px;
+}
+.app__brand {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+.app__wordmark {
+  font-size: var(--step-3);
+  color: var(--amber-bright);
+  text-shadow: 0 0 18px rgba(232, 163, 74, 0.25);
+}
+.app__version {
+  font-size: var(--step--1);
+  color: var(--faint);
+}
+.app__hook {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--step-0);
+}
+
+.app__status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 14px;
+  border: 1px solid var(--amber);
+  border-radius: var(--radius-sm);
+  background: rgba(232, 163, 74, 0.08);
+  color: var(--amber-bright);
+}
+.app__status button {
+  min-height: auto;
+  padding: 0 8px;
+  border: none;
+  background: none;
+}
+
+.app__console {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 320px);
+  gap: 12px;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .app__console {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* --- Transport ---------------------------------------------------------- */
+.transport {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding: 10px 16px;
+}
+.transport__buttons {
+  display: flex;
+  gap: 8px;
+}
+.transport__btn {
+  min-width: 54px;
+  font-size: var(--step-1);
+  line-height: 1;
+}
+.transport__btn.is-play {
+  border-color: var(--play);
+  color: var(--play);
+}
+.transport__btn--record {
+  color: var(--record);
+  border-color: var(--record);
+}
+.transport__btn--record.is-record {
+  background: var(--record);
+  color: var(--ink);
+  box-shadow: 0 0 16px rgba(255, 59, 48, 0.5);
+}
+.transport__timing {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.position-readout {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 14px;
+  border: 1px solid var(--line-bright);
+  border-radius: var(--radius-sm);
+  background: var(--ink);
+}
+.position-readout__bars {
+  font-size: var(--step-2);
+  color: var(--amber-bright);
+  letter-spacing: 0.04em;
+}
+.position-readout__clock {
+  font-size: var(--step--1);
+  color: var(--muted);
+}
+
+/* --- Fields / toggles --------------------------------------------------- */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.field--inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+.field__label {
+  white-space: nowrap;
+}
+.transport__timesig {
+  border: none;
+  margin: 0;
+  padding: 0;
+}
+.input--num {
+  width: 5.5ch;
+  text-align: right;
+  padding: 0.35em 0.5em;
+  min-height: auto;
+  background: var(--ink);
+  border: 1px solid var(--line-bright);
+  border-radius: var(--radius-sm);
+}
+.input--sig {
+  width: 3.5ch;
+}
+select.readout {
+  padding: 0.35em 0.5em;
+  min-height: auto;
+  background: var(--ink);
+  border: 1px solid var(--line-bright);
+  border-radius: var(--radius-sm);
+}
+
+.toggle {
+  min-height: 32px;
+  min-width: 42px;
+  padding: 0.3em 0.7em;
+  font-size: var(--step--1);
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  background: var(--raised);
+  color: var(--muted);
+}
+.toggle.is-on {
+  color: var(--ink);
+  background: var(--amber);
+  border-color: var(--amber-bright);
+}
+.toggle--record.is-on {
+  background: var(--record);
+  box-shadow: 0 0 12px rgba(255, 59, 48, 0.45);
+}
+.toggle--play.is-on {
+  background: var(--play);
+}
+.toggle--cyan.is-on {
+  background: var(--cyan);
+}
+
+/* --- Fader / knob / meter ---------------------------------------------- */
+.fader {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.fader__input {
+  writing-mode: vertical-lr;
+  direction: rtl;
+  width: 20px;
+  height: 90px;
+  accent-color: var(--amber);
+}
+.fader__label,
+.knob__label {
+  font-size: var(--step--1);
+}
+.fader__readout,
+.knob__readout {
+  font-size: var(--step--1);
+  color: var(--amber-bright);
+}
+
+.knob {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  width: 58px;
+}
+.knob__dial {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 30% 30%, var(--raised), var(--ink));
+  border: 1px solid var(--line-bright);
+  position: relative;
+  transform: rotate(var(--knob-angle, 0deg));
+}
+.knob--cyan .knob__dial {
+  border-color: var(--cyan);
+}
+.knob__pointer {
+  position: absolute;
+  top: 3px;
+  left: 50%;
+  width: 2px;
+  height: 14px;
+  margin-left: -1px;
+  background: var(--amber-bright);
+  border-radius: 1px;
+}
+.knob--cyan .knob__pointer {
+  background: var(--cyan);
+}
+.knob__input {
+  width: 52px;
+  accent-color: var(--amber);
+}
+
+.meter {
+  --meter-grad: linear-gradient(to top, var(--vu-green) 0%, var(--vu-green) 60%, var(--vu-amber) 80%, var(--vu-red) 100%);
+}
+.meter--vertical {
+  width: 14px;
+  height: 90px;
+}
+.meter--vertical .meter__track {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: var(--ink);
+  border: 1px solid var(--line-bright);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.meter--vertical .meter__fill {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  height: 0%;
+  background: var(--meter-grad);
+}
+.meter--horizontal .meter__track {
+  position: relative;
+  width: 100%;
+  height: 12px;
+  background: var(--ink);
+  border: 1px solid var(--line-bright);
+  overflow: hidden;
+}
+.meter--horizontal .meter__fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(to right, var(--vu-green) 0%, var(--vu-green) 60%, var(--vu-amber) 80%, var(--vu-red) 100%);
+}
+.meter__clip {
+  margin-top: 4px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--raised);
+  border: 1px solid var(--line-bright);
+}
+.meter__clip.is-lit {
+  background: var(--record);
+  box-shadow: 0 0 8px var(--record);
+}
+
+/* --- Timeline ----------------------------------------------------------- */
+.timeline {
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.timeline__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.clip-toolbar {
+  display: flex;
+  gap: 6px;
+}
+.clip-toolbar button {
+  min-height: 32px;
+  padding: 0.3em 0.8em;
+  font-size: var(--step--1);
+}
+.timeline__scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--ink);
+}
+.timeline__content {
+  position: relative;
+  min-height: 120px;
+}
+.ruler {
+  position: relative;
+  height: 26px;
+  border-bottom: 1px solid var(--line-bright);
+  cursor: text;
+}
+.ruler__bar {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-left: 1px solid var(--line-bright);
+}
+.ruler__label {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  font-size: var(--step--1);
+  color: var(--faint);
+}
+.timeline__loop {
+  position: absolute;
+  top: 26px;
+  bottom: 0;
+  background: rgba(79, 208, 214, 0.1);
+  border-left: 1px solid var(--cyan);
+  border-right: 1px solid var(--cyan);
+  pointer-events: none;
+}
+.lanes {
+  position: relative;
+}
+.lane {
+  position: relative;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(var(--panel), var(--panel-2));
+}
+.clip {
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--line-bright);
+  border-left-width: 3px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--track-color, var(--amber)) 22%, var(--ink));
+  overflow: hidden;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+.clip.is-selected {
+  outline: 2px solid var(--amber-bright);
+  outline-offset: -1px;
+}
+.clip__name {
+  padding: 0 8px;
+  font-size: var(--step--1);
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+.clip__handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: ew-resize;
+  background: rgba(255, 255, 255, 0.08);
+}
+.clip__handle--in {
+  left: 0;
+}
+.clip__handle--out {
+  right: 0;
+}
+.clip__fade {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(12, 10, 8, 0.55);
+  pointer-events: none;
+}
+.clip__fade--in {
+  left: 0;
+  clip-path: polygon(0 0, 0 100%, 100% 100%);
+}
+.clip__fade--out {
+  right: 0;
+  clip-path: polygon(100% 0, 0 100%, 100% 100%);
+}
+.timeline__playhead {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 2px;
+  background: var(--record);
+  box-shadow: 0 0 8px rgba(255, 59, 48, 0.6);
+  pointer-events: none;
+  will-change: transform;
+}
+
+/* --- Mixer / strips ----------------------------------------------------- */
+.mixer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mixer__strips {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+.mixer__add {
+  align-self: flex-start;
+}
+.strip {
+  flex: 0 0 auto;
+  width: 168px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+}
+.strip.is-selected {
+  border-color: var(--amber);
+}
+.strip__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-left: 3px solid var(--track-color, var(--amber));
+  padding-left: 6px;
+}
+.strip__num {
+  font-size: var(--step--1);
+  color: var(--faint);
+}
+.strip__name {
+  flex: 1;
+  min-width: 0;
+  min-height: auto;
+  padding: 0.3em 0.4em;
+  background: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+.strip__remove {
+  min-height: auto;
+  min-width: auto;
+  padding: 0 8px;
+  border: none;
+  background: none;
+  color: var(--faint);
+}
+.strip__remove:hover:not(:disabled) {
+  color: var(--record);
+}
+.strip__buttons {
+  display: flex;
+  gap: 4px;
+}
+.strip__buttons .toggle {
+  flex: 1;
+  min-width: 0;
+  padding: 0.3em 0;
+}
+.strip__mix {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 8px;
+}
+.strip__eq,
+.strip__tape {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 4px;
+  border-top: 1px solid var(--line);
+  padding-top: 6px;
+}
+
+/* --- Master ------------------------------------------------------------- */
+.master {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+}
+.master__title {
+  font-size: var(--step-1);
+  letter-spacing: var(--track-label);
+  color: var(--muted);
+}
+.master__controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+}
+.master__knobs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.master__bounce {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+.master__bounce button {
+  min-height: 36px;
+  padding: 0.4em 0.8em;
+  font-size: var(--step--1);
+}
+
+/* --- Session bar -------------------------------------------------------- */
+.session-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+}
+.session-bar button {
+  min-height: 36px;
+  padding: 0.4em 0.8em;
+  font-size: var(--step--1);
+}
+.session-bar__name {
+  flex: 1;
+  min-width: 160px;
+  min-height: 36px;
+  padding: 0.3em 0.6em;
+  background: var(--ink);
+  border: 1px solid var(--line-bright);
+  border-radius: var(--radius-sm);
+}
+.session-bar__open {
+  position: relative;
+}
+.session-bar__list {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 220px;
+  max-height: 260px;
+  overflow-y: auto;
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+}
+.session-bar__item {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  min-height: 34px;
+}
+.session-bar__item:hover {
+  background: var(--raised);
+}
+.session-bar__empty {
+  padding: 8px;
+  color: var(--faint);
+}
+
+/* --- Start-audio gate --------------------------------------------------- */
+.gate {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(6, 5, 3, 0.86);
+  backdrop-filter: blur(3px);
+  z-index: 100;
+}
+.gate__card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 32px 40px;
+  text-align: center;
+  max-width: 420px;
+}
+.gate__wordmark {
+  font-size: var(--step-3);
+  color: var(--amber-bright);
+}
+.gate__blurb {
+  margin: 0;
+  color: var(--muted);
+}
+.gate__start {
+  font-size: var(--step-1);
+  padding: 0.6em 1.6em;
+  color: var(--ink);
+  background: var(--amber);
+  border-color: var(--amber-bright);
+}

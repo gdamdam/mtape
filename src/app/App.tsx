@@ -1,0 +1,104 @@
+// mtape — single-screen composition. Owns the reducer, mirrors state into a ref
+// for the engine bridge + hot-path readouts, gates all audio behind an explicit
+// "Start audio" gesture (browser autoplay policy), and wires Space to play/stop
+// unless the user is typing in a field.
+
+import { useEffect, useReducer, useRef, type ReactNode } from 'react'
+import { initialState, reducer } from './state'
+import { useEngine } from './useEngine'
+import { defaultSession, TRACK_COUNT_MAX, TRACK_COUNT_MIN } from '../audio/contracts'
+import { TransportBar } from '../components/TransportBar'
+import { MasterSection } from '../components/MasterSection'
+import { TrackStrip } from '../components/TrackStrip'
+import { Timeline } from '../components/Timeline'
+import { SessionBar } from '../components/SessionBar'
+
+function newId(): string {
+  return typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `id-${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+/** True when focus is in a text control, where Space must type a space. */
+function isTypingTarget(el: Element | null): boolean {
+  if (!(el instanceof HTMLElement)) return false
+  const tag = el.tagName
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable
+}
+
+export function App(): ReactNode {
+  const [state, dispatch] = useReducer(reducer, undefined, () => initialState(defaultSession(newId())))
+  // Refresh the ref during render so the engine bridge + event handlers read the
+  // latest state without re-subscribing.
+  const stateRef = useRef(state)
+  stateRef.current = state
+
+  const { controls, posRef, meterRef } = useEngine(dispatch, stateRef)
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.code !== 'Space' || e.repeat) return
+      if (isTypingTarget(document.activeElement)) return
+      e.preventDefault()
+      if (!stateRef.current.audioReady) return
+      if (stateRef.current.playing) controls.stop()
+      else controls.play()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [controls])
+
+  const canRemove = state.session.tracks.length > TRACK_COUNT_MIN
+  const canAdd = state.session.tracks.length < TRACK_COUNT_MAX
+
+  return (
+    <div className="app">
+      <header className="app__header panel">
+        <div className="app__brand">
+          <span className="nameplate app__wordmark">MTAPE</span>
+          <span className="readout app__version">v{__APP_VERSION__}</span>
+        </div>
+        <p className="app__hook">Press record on your browser. Arrange what you played. Bounce a song.</p>
+      </header>
+
+      {state.status ? (
+        <div className="app__status readout" role="status">
+          <span>{state.status}</span>
+          <button type="button" aria-label="Dismiss" onClick={() => dispatch({ type: 'SET_STATUS', status: null })}>
+            ×
+          </button>
+        </div>
+      ) : null}
+
+      <TransportBar state={state} controls={controls} dispatch={dispatch} posRef={posRef} />
+
+      <Timeline state={state} controls={controls} dispatch={dispatch} posRef={posRef} />
+
+      <div className="app__console">
+        <div className="mixer" aria-label="Mixer">
+          <div className="mixer__strips">
+            {state.session.tracks.map((track, i) => (
+              <TrackStrip key={track.id} track={track} index={i} selected={state.selectedTrackId === track.id} canRemove={canRemove} controls={controls} dispatch={dispatch} meterRef={meterRef} />
+            ))}
+          </div>
+          <button type="button" className="mixer__add" disabled={!canAdd} onClick={() => dispatch({ type: 'ADD_TRACK', id: newId() })}>
+            ＋ Track
+          </button>
+        </div>
+        <MasterSection state={state} controls={controls} dispatch={dispatch} meterRef={meterRef} />
+      </div>
+
+      <SessionBar state={state} controls={controls} dispatch={dispatch} />
+
+      {!state.audioReady ? (
+        <div className="gate" role="dialog" aria-modal="true" aria-label="Start audio">
+          <div className="gate__card panel">
+            <span className="nameplate gate__wordmark">MTAPE</span>
+            <p className="gate__blurb">A browser-native multitrack tape recorder. Audio starts only when you say so.</p>
+            <button type="button" className="gate__start" onClick={() => void controls.start()}>
+              Start audio
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  )
+}
