@@ -1,7 +1,7 @@
 // mtape — the transport strip: play/stop/record, the position counter, and the
 // timing controls (tempo, meter, metronome + count-in, loop, snap).
 
-import { type Dispatch, type ReactNode, type RefObject } from 'react'
+import { useEffect, useState, type ChangeEvent, type Dispatch, type FocusEvent, type KeyboardEvent, type ReactNode, type RefObject } from 'react'
 import type { Action, AppState } from '../app/state'
 import type { UiControls } from '../app/useEngine'
 import { COUNT_IN_BARS_MAX, TEMPO_MAX, TEMPO_MIN, TIME_SIG_DENOMINATORS, TIME_SIG_NUMERATOR_MAX, TIME_SIG_NUMERATOR_MIN } from '../audio/contracts'
@@ -15,8 +15,45 @@ interface TransportBarProps {
   posRef: RefObject<number>
 }
 
+interface NumberFieldProps {
+  value: string
+  onFocus: () => void
+  onChange: (e: ChangeEvent<HTMLInputElement>) => void
+  onBlur: (e: FocusEvent<HTMLInputElement>) => void
+  onKeyDown: (e: KeyboardEvent<HTMLInputElement>) => void
+}
+
+/** Local edit buffer for a numeric field: while focused the user can clear or
+ *  retype freely; the value is only committed (and reducer-clamped) on blur or
+ *  Enter — so a mid-edit blank isn't coerced to 0/min per keystroke. When not
+ *  editing the field mirrors the committed value (survives a clamp that leaves
+ *  the value unchanged). */
+function useNumberEdit(value: number, commit: (n: number) => void): NumberFieldProps {
+  const [text, setText] = useState(() => String(value))
+  const [editing, setEditing] = useState(false)
+  useEffect(() => {
+    if (!editing) setText(String(value))
+  }, [value, editing])
+  return {
+    value: editing ? text : String(value),
+    onFocus: () => setEditing(true),
+    onChange: (e) => setText(e.currentTarget.value),
+    onBlur: (e) => {
+      setEditing(false)
+      commit(Number(e.currentTarget.value))
+    },
+    onKeyDown: (e) => {
+      if (e.key === 'Enter') e.currentTarget.blur()
+    },
+  }
+}
+
 export function TransportBar({ state, controls, dispatch, posRef }: TransportBarProps): ReactNode {
   const { session, playing, recording } = state
+  const tempoField = useNumberEdit(session.tempo, (tempo) => dispatch({ type: 'SET_TEMPO', tempo }))
+  const numeratorField = useNumberEdit(session.timeSignature.numerator, (numerator) =>
+    dispatch({ type: 'SET_TIME_SIG', timeSignature: { ...session.timeSignature, numerator } }),
+  )
   return (
     <section className="transport panel" aria-label="Transport">
       <div className="transport__buttons">
@@ -34,6 +71,7 @@ export function TransportBar({ state, controls, dispatch, posRef }: TransportBar
           className={`transport__btn transport__btn--record${recording ? ' is-record' : ''}`}
           aria-label="Record"
           aria-pressed={recording}
+          disabled={recording}
           onClick={() => controls.record()}
         >
           ⏺
@@ -45,27 +83,12 @@ export function TransportBar({ state, controls, dispatch, posRef }: TransportBar
       <div className="transport__timing">
         <label className="field field--inline">
           <span className="label">Tempo</span>
-          <input
-            className="readout input--num"
-            type="number"
-            min={TEMPO_MIN}
-            max={TEMPO_MAX}
-            value={session.tempo}
-            onChange={(e) => dispatch({ type: 'SET_TEMPO', tempo: Number(e.currentTarget.value) })}
-          />
+          <input className="readout input--num" type="number" min={TEMPO_MIN} max={TEMPO_MAX} {...tempoField} />
         </label>
 
         <fieldset className="field field--inline transport__timesig">
           <legend className="label">Meter</legend>
-          <input
-            className="readout input--num input--sig"
-            type="number"
-            aria-label="Beats per bar"
-            min={TIME_SIG_NUMERATOR_MIN}
-            max={TIME_SIG_NUMERATOR_MAX}
-            value={session.timeSignature.numerator}
-            onChange={(e) => dispatch({ type: 'SET_TIME_SIG', timeSignature: { ...session.timeSignature, numerator: Number(e.currentTarget.value) } })}
-          />
+          <input className="readout input--num input--sig" type="number" aria-label="Beats per bar" min={TIME_SIG_NUMERATOR_MIN} max={TIME_SIG_NUMERATOR_MAX} {...numeratorField} />
           <span aria-hidden="true">/</span>
           <select
             className="readout"

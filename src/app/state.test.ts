@@ -107,6 +107,29 @@ describe('track params', () => {
   })
 })
 
+describe('selection', () => {
+  it('SELECT_TRACK to a different track clears the stale clip selection', () => {
+    const s0 = seeded() // clip c1 on track 0, selected
+    const other = s0.session.tracks[1].id
+    const s1 = run(s0, { type: 'SELECT_CLIP', trackId: s0.session.tracks[0].id, clipId: 'c1' }, { type: 'SELECT_TRACK', trackId: other })
+    expect(s1.selectedTrackId).toBe(other)
+    expect(s1.selectedClipId).toBeNull()
+  })
+  it('SELECT_TRACK to the same track keeps the clip selection', () => {
+    const tid = seeded().session.tracks[0].id
+    const s0 = run(seeded(), { type: 'SELECT_CLIP', trackId: tid, clipId: 'c1' })
+    const s1 = reducer(s0, { type: 'SELECT_TRACK', trackId: tid })
+    expect(s1.selectedClipId).toBe('c1')
+  })
+  it('ADD_TRACK clears a stale clip selection from the previous track', () => {
+    const tid = seeded().session.tracks[0].id
+    const s0 = run(seeded(), { type: 'SELECT_CLIP', trackId: tid, clipId: 'c1' })
+    const s1 = reducer(s0, { type: 'ADD_TRACK', id: 'extra' })
+    expect(s1.selectedTrackId).toBe('extra')
+    expect(s1.selectedClipId).toBeNull()
+  })
+})
+
 describe('add / remove track bounds', () => {
   it('ADD_TRACK appends up to the max then no-ops', () => {
     let s = freshState()

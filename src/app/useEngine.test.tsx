@@ -1,11 +1,30 @@
 // @vitest-environment jsdom
 import { useReducer, useRef, type ReactNode } from 'react'
 import { act, fireEvent, render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { initialState, reducer } from './state'
 import { useEngine, type UiControls } from './useEngine'
 import { createMockEngine, type MockEngine } from './testMockEngine'
 import { defaultSession } from '../audio/contracts'
+import { putAudio, putSession } from '../persistence/db'
+import { encodeSessionLink } from '../sharing/sessionLink'
+
+// db and the sharing codec are stubbed so we can assert what the hook persists /
+// encodes without a real IndexedDB or large-payload boundary.
+vi.mock('../persistence/db', () => ({
+  putAudio: vi.fn(async () => {}),
+  putSession: vi.fn(async () => {}),
+  getAudio: vi.fn(async () => undefined),
+  getSession: vi.fn(async () => undefined),
+}))
+vi.mock('../sharing/sessionLink', () => ({
+  encodeSessionLink: vi.fn(() => 'tok'),
+  decodeSessionLink: vi.fn(() => null),
+}))
+
+afterEach(() => {
+  vi.clearAllMocks()
+})
 
 /** Mount a real reducer + useEngine wired to an injected mock engine. */
 function Harness({ engine, onControls }: { engine: MockEngine; onControls?: (c: UiControls) => void }): ReactNode {
@@ -20,10 +39,12 @@ function Harness({ engine, onControls }: { engine: MockEngine; onControls?: (c: 
       <span data-testid="ready">{String(state.audioReady)}</span>
       <span data-testid="playing">{String(state.playing)}</span>
       <span data-testid="clips">{state.session.tracks[0].clips.length}</span>
+      <span data-testid="clipStart">{state.session.tracks[0].clips[0]?.startSec ?? ''}</span>
       <span data-testid="status">{state.status ?? ''}</span>
       <button onClick={() => void controls.start()}>start</button>
       <button onClick={() => controls.play()}>play</button>
       <button onClick={() => void controls.chooseInput(firstTrack, 'tab')}>tab</button>
+      <button onClick={() => dispatch({ type: 'SET_TEMPO', tempo: 140 })}>tempo</button>
     </div>
   )
 }
@@ -99,5 +120,137 @@ describe('useEngine bridge', () => {
       }
     })
     expect(screen.getByTestId('clips').textContent).toBe('0')
+  })
+
+  it('persists a completed take as a NON-empty WAV — loadAudio must not detach the encode buffers (H1)', async () => {
+    const engine = createMockEngine()
+    render(<Harness engine={engine} />)
+    await startAudio()
+    const samples = new Float32Array(100).fill(0.5)
+    await act(async () => {
+      engine.emit({ type: 'recordChunk', trackId: 't1', audioId: 'recX', channels: [samples], startFrame: 0 })
+      engine.emit({ type: 'recordComplete', trackId: 't1', audioId: 'recX', startSec: 0, durationSec: 100 / 48000 })
+    })
+    // finalizeRecording awaits putAudio; let the microtask/timer flush.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    const put = putAudio as unknown as Mock
+    expect(put).toHaveBeenCalled()
+    const blob = put.mock.calls.at(-1)![1] as Blob
+    // 44-byte header only == an empty (detached) take; 100 mono 16-bit frames add 200 bytes.
+    expect(blob.size).toBeGreaterThan(44)
+  })
+
+  it('places a take at the engine-reported start without re-compensating latency (H2)', async () => {
+    const engine = createMockEngine({ latencySec: 0.03 })
+    render(<Harness engine={engine} />)
+    await startAudio()
+    await act(async () => {
+      engine.emit({ type: 'recordComplete', trackId: 't1', audioId: 'r', startSec: 1, durationSec: 2 })
+    })
+    // ev.startSec is already latency-compensated upstream; it must land verbatim.
+    expect(screen.getByTestId('clipStart').textContent).toBe('1')
+  })
+
+  it('does not re-post the arrangement when only tempo changes (L12)', async () => {
+    const engine = createMockEngine()
+    render(<Harness engine={engine} />)
+    await startAudio()
+    const arrCount = engine.arrangements.length
+    const tempoCount = engine.calls.filter((c) => c.method === 'setTempo').length
+    await act(async () => {
+      fireEvent.click(screen.getByText('tempo'))
+    })
+    expect(engine.arrangements.length).toBe(arrCount) // arrangement unchanged → not re-posted
+    expect(engine.calls.filter((c) => c.method === 'setTempo').length).toBe(tempoCount + 1)
+  })
+
+  it('surfaces an error and copies nothing when the share link is oversize (H8)', async () => {
+    ;(encodeSessionLink as unknown as Mock).mockReturnValueOnce(null)
+    let ctrls: UiControls | undefined
+    render(<Harness engine={createMockEngine()} onControls={(c) => (ctrls = c)} />)
+    await act(async () => {
+      await ctrls!.copyShareLink()
+    })
+    expect(screen.getByTestId('status').textContent).toMatch(/too large/i)
+    expect(location.hash).not.toContain('tok')
+  })
+
+  it('skips autosave for a pristine session but persists after an edit (M11)', async () => {
+    vi.useFakeTimers()
+    try {
+      render(<Harness engine={createMockEngine()} />)
+      await act(async () => {
+        vi.advanceTimersByTime(700)
+      })
+      expect(putSession as unknown as Mock).not.toHaveBeenCalled()
+      await act(async () => {
+        fireEvent.click(screen.getByText('tempo'))
+      })
+      await act(async () => {
+        vi.advanceTimersByTime(700)
+      })
+      expect(putSession as unknown as Mock).toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('builds only one engine for two concurrent start() calls (M12)', async () => {
+    let count = 0
+    function M(): ReactNode {
+      const [state, dispatch] = useReducer(reducer, undefined, () => initialState(defaultSession('t')))
+      const ref = useRef(state)
+      ref.current = state
+      const { controls } = useEngine(dispatch, ref, {
+        createEngine: () => {
+          count++
+          return createMockEngine()
+        },
+      })
+      return (
+        <button
+          onClick={() => {
+            void controls.start()
+            void controls.start()
+          }}
+        >
+          double-start
+        </button>
+      )
+    }
+    render(<M />)
+    await act(async () => {
+      fireEvent.click(screen.getByText('double-start'))
+    })
+    expect(count).toBe(1)
+  })
+
+  it('surfaces a reload prompt when the engine import fails, without hanging the gate (M3)', async () => {
+    function M(): ReactNode {
+      const [state, dispatch] = useReducer(reducer, undefined, () => initialState(defaultSession('t')))
+      const ref = useRef(state)
+      ref.current = state
+      const { controls } = useEngine(dispatch, ref, {
+        // Simulate the lazy AudioEngine chunk 404-ing on a stale post-deploy tab.
+        createEngine: () => {
+          throw new Error('Failed to fetch dynamically imported module')
+        },
+      })
+      return (
+        <div>
+          <span data-testid="m3-ready">{String(state.audioReady)}</span>
+          <span data-testid="m3-status">{state.status ?? ''}</span>
+          <button onClick={() => void controls.start()}>m3-start</button>
+        </div>
+      )
+    }
+    render(<M />)
+    await act(async () => {
+      fireEvent.click(screen.getByText('m3-start'))
+    })
+    expect(screen.getByTestId('m3-ready').textContent).toBe('false')
+    expect(screen.getByTestId('m3-status').textContent).toMatch(/new version/i)
   })
 })

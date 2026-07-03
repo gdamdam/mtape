@@ -15,9 +15,8 @@ import { clampNumber, TAPE_AMOUNT_MAX, TAPE_AMOUNT_MIN } from '../contracts'
 // --------------------------------------------------------------------------
 
 /**
- * Extra tanh drive at amount=1. `drive = 1 + amount * SATURATION_DRIVE`, so the
- * knee sharpens (and peaks compress) as amount rises. Kept modest to stay
- * tasteful; the effect is default-off anyway.
+ * tanh drive at amount=1. `drive = amount * SATURATION_DRIVE`, so the knee
+ * sharpens as amount rises. Kept modest to stay tasteful; default-off anyway.
  */
 export const SATURATION_DRIVE = 4
 
@@ -28,26 +27,29 @@ export const SATURATION_DRIVE = 4
  * @param amount  drive, 0..1. 0 => exact bypass (passthrough).
  * @returns saturated sample.
  *
- * Curve: `tanh(drive * x) / drive` with `drive = 1 + amount * SATURATION_DRIVE`.
- * Properties (for amount > 0):
+ * Curve: `tanh(drive * x) / tanh(drive)` with `drive = amount * SATURATION_DRIVE`
+ * — the same continuous, full-scale-preserving normalization as `softClipDrive`
+ * in dynamics.ts (mirrored here, not shared, to keep this module dependency-free).
+ * Properties:
+ *  - continuous in amount at 0: as amount -> 0+, drive -> 0 and the curve -> x
+ *    (identity), so leaving the knob's zero introduces no jump.
+ *  - full-scale preserved: f(±1) = ±1 for every amount (normalizing by
+ *    `tanh(drive)` pins the rails), so peaks don't dip when the knob engages.
  *  - odd-symmetric: f(-x) = -f(x) (tanh is odd).
  *  - monotonic increasing in x (tanh is, drive > 0).
- *  - bounded: |f(x)| <= 1/drive <= 1 for all x, so output never exceeds ~1.
- *  - unity gain at low level: f'(0) = 1 for every amount (the normalization by
- *    `drive` cancels the tanh slope), so quiet signals pass ~unchanged.
- *  - higher amount => higher drive => lower ceiling => more peak compression.
+ *  - on nominal input |x| <= 1, |f(x)| <= 1 (never exceeds full scale); finite
+ *    for all x.
+ *  - low-level boost (the tape "fullness"): f'(0) = drive/tanh(drive) >= 1,
+ *    rising with amount, so quiet signals lift relative to peaks.
  *
- * WHY the amount==0 bypass: a curve that is bounded near unity cannot also be
- * the identity for large |x| (identity is unbounded). Rather than pick a curve
- * that already colours the signal at amount 0, we make 0 a true bypass — matching
- * the "default-off" contract — and let any amount > 0 engage the bounded curve.
+ * The amount==0 fast path is an exact bypass (and avoids the 0/0 at drive=0).
  */
 export function softSaturate(x: number, amount: number): number {
   if (!Number.isFinite(x)) return 0
   const a = clampNumber(amount, TAPE_AMOUNT_MIN, TAPE_AMOUNT_MAX, 0)
   if (a <= 0) return x // true bypass — identity, passthrough
-  const drive = 1 + a * SATURATION_DRIVE
-  return Math.tanh(drive * x) / drive
+  const drive = a * SATURATION_DRIVE
+  return Math.tanh(drive * x) / Math.tanh(drive)
 }
 
 // --------------------------------------------------------------------------

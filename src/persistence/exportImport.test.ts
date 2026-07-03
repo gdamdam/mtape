@@ -54,6 +54,43 @@ describe('parseImport validation', () => {
     expect(() => parseImport(JSON.stringify({ session: {} }))).toThrow()
   })
 
+  it('throws when the envelope has no session', () => {
+    // A right-kind, right-version envelope with `session` absent is broken, not
+    // coercible — sanitizing `undefined` would silently import an empty arrangement.
+    const bad = JSON.stringify({ kind: EXPORT_KIND, exportVersion: EXPORT_VERSION, schemaVersion: SESSION_SCHEMA_VERSION })
+    expect(() => parseImport(bad)).toThrow(/no "session"/)
+  })
+
+  it('throws when the session is explicitly null', () => {
+    const bad = JSON.stringify({ kind: EXPORT_KIND, exportVersion: EXPORT_VERSION, schemaVersion: SESSION_SCHEMA_VERSION, session: null })
+    expect(() => parseImport(bad)).toThrow(/no "session"/)
+  })
+
+  it('throws on an unsupported exportVersion', () => {
+    const future = JSON.stringify({
+      kind: EXPORT_KIND,
+      exportVersion: EXPORT_VERSION + 1,
+      schemaVersion: SESSION_SCHEMA_VERSION,
+      session: exportSession(sampleSession()).session,
+    })
+    expect(() => parseImport(future)).toThrow(/export version/)
+  })
+
+  it('throws on an unsupported schemaVersion', () => {
+    const future = JSON.stringify({
+      kind: EXPORT_KIND,
+      exportVersion: EXPORT_VERSION,
+      schemaVersion: SESSION_SCHEMA_VERSION + 1,
+      session: exportSession(sampleSession()).session,
+    })
+    expect(() => parseImport(future)).toThrow(/schema version/)
+  })
+
+  it('throws on a missing exportVersion (undefined !== supported version)', () => {
+    const bad = JSON.stringify({ kind: EXPORT_KIND, schemaVersion: SESSION_SCHEMA_VERSION, session: {} })
+    expect(() => parseImport(bad)).toThrow(/export version/)
+  })
+
   it('degrades a garbage inner session to a valid default-ish session (no throw)', () => {
     const envelope = JSON.stringify({ kind: EXPORT_KIND, exportVersion: 1, schemaVersion: 1, session: 42 })
     const restored = parseImport(envelope)

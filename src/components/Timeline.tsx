@@ -66,8 +66,10 @@ export function Timeline({ state, controls, dispatch, posRef }: TimelineProps): 
   }, [posRef, reduced])
 
   const seekFromPointer = (e: React.PointerEvent<HTMLDivElement>): void => {
+    // .ruler lives inside the scrolled content, so its rect already reflects the
+    // horizontal scroll — adding scrollLeft would count the offset twice.
     const rect = e.currentTarget.getBoundingClientRect()
-    const sec = Math.max(0, (e.clientX - rect.left + (scrollRef.current?.scrollLeft ?? 0)) / PX_PER_SEC)
+    const sec = Math.max(0, (e.clientX - rect.left) / PX_PER_SEC)
     controls.seek(sec)
   }
 
@@ -166,22 +168,43 @@ function ClipView({ clip, trackId, color, selected, tempo, timeSignature, snapTo
   const beginDrag = (e: React.PointerEvent, mode: 'move' | 'in' | 'out'): void => {
     e.preventDefault()
     e.stopPropagation()
+    // Ignore secondary pointers (a second finger) so simultaneous touches can't
+    // stack a second drag on the same clip.
+    if (!e.isPrimary) return
     const startX = e.clientX
+    const pointerId = e.pointerId
+    const el = e.currentTarget as HTMLElement
+    // Capture the pointer so a drag that leaves the element (or the browser
+    // hijacks for scroll) still routes end events here.
+    try {
+      el.setPointerCapture(pointerId)
+    } catch {
+      // setPointerCapture can throw if the pointer is already gone; harmless.
+    }
     const origStart = clip.startSec
     const origEnd = clipEndSec(clip)
     const snap = (sec: number): number => (snapToBar ? snapSecToBar(sec, tempo, timeSignature) : sec)
     const move = (ev: PointerEvent): void => {
+      if (ev.pointerId !== pointerId) return
       const dxSec = (ev.clientX - startX) / PX_PER_SEC
       if (mode === 'move') dispatch({ type: 'MOVE_CLIP', trackId, clipId: clip.id, startSec: Math.max(0, snap(origStart + dxSec)) })
       else if (mode === 'in') dispatch({ type: 'TRIM_IN', trackId, clipId: clip.id, newStartSec: Math.max(0, snap(origStart + dxSec)) })
       else dispatch({ type: 'TRIM_OUT', trackId, clipId: clip.id, newEndSec: snap(origEnd + dxSec) })
     }
-    const up = (): void => {
+    // pointercancel (touch interruption / scroll) and lostpointercapture end the
+    // drag too — without this the move listener leaked and the clip tracked every
+    // subsequent pointer forever on touch devices.
+    const end = (ev: PointerEvent): void => {
+      if (ev.pointerId !== pointerId) return
       window.removeEventListener('pointermove', move)
-      window.removeEventListener('pointerup', up)
+      window.removeEventListener('pointerup', end)
+      window.removeEventListener('pointercancel', end)
+      window.removeEventListener('lostpointercapture', end)
     }
     window.addEventListener('pointermove', move)
-    window.addEventListener('pointerup', up)
+    window.addEventListener('pointerup', end)
+    window.addEventListener('pointercancel', end)
+    window.addEventListener('lostpointercapture', end)
   }
 
   return (
@@ -219,9 +242,20 @@ function ClipToolbar({ state, dispatch, posRef }: ClipToolbarProps): ReactNode {
   const act = (make: (trackId: string, clipId: string) => Action): void => {
     if (selectedTrackId && selectedClipId) dispatch(make(selectedTrackId, selectedClipId))
   }
+  // Split only when the playhead falls strictly inside the selected clip;
+  // splitting outside (or on an edge) would clamp to a degenerate sliver clip.
+  const split = (): void => {
+    if (!selectedTrackId || !selectedClipId) return
+    const clip = state.session.tracks.find((t) => t.id === selectedTrackId)?.clips.find((c) => c.id === selectedClipId)
+    if (!clip) return
+    const at = posRef.current
+    const EPS = 1e-3
+    if (at <= clip.startSec + EPS || at >= clipEndSec(clip) - EPS) return
+    dispatch({ type: 'SPLIT_CLIP', trackId: selectedTrackId, clipId: selectedClipId, atSec: at, newIdA: localId(), newIdB: localId() })
+  }
   return (
     <div className="clip-toolbar" role="group" aria-label="Clip actions">
-      <button type="button" disabled={disabled} onClick={() => act((trackId, clipId) => ({ type: 'SPLIT_CLIP', trackId, clipId, atSec: posRef.current, newIdA: localId(), newIdB: localId() }))}>
+      <button type="button" disabled={disabled} onClick={split}>
         Split
       </button>
       <button type="button" disabled={disabled} onClick={() => act((trackId, clipId) => ({ type: 'DUPLICATE_CLIP', trackId, clipId, newId: localId() }))}>

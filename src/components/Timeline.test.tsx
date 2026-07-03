@@ -43,11 +43,18 @@ describe('Timeline', () => {
   })
 
   it('splits at the current playhead position', () => {
-    const posRef = { current: 6 }
+    const posRef = { current: 6 } // inside the clip (4s..12s)
     const dispatch = vi.fn()
-    const s = { ...stateWithClip(), selectedTrackId: 't1', selectedClipId: 'c1' }
-    render(<Timeline state={s} controls={stubControls()} dispatch={dispatch} posRef={posRef} />)
+    render(<Timeline state={stateWithClip()} controls={stubControls()} dispatch={dispatch} posRef={posRef} />)
     fireEvent.click(screen.getByRole('button', { name: 'Split' }))
     expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: 'SPLIT_CLIP', atSec: 6 }))
+  })
+
+  it('does not split when the playhead is outside the selected clip', () => {
+    const posRef = { current: 20 } // past the clip end → would create a sliver
+    const dispatch = vi.fn()
+    render(<Timeline state={stateWithClip()} controls={stubControls()} dispatch={dispatch} posRef={posRef} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Split' }))
+    expect(dispatch).not.toHaveBeenCalled()
   })
 })

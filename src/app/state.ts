@@ -167,7 +167,9 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, snapToBar: !state.snapToBar }
 
     case 'SELECT_TRACK':
-      return { ...state, selectedTrackId: action.trackId }
+      // Switching to a different track invalidates any clip selection scoped to
+      // the previous track (else the ClipToolbar acts on a clip not shown).
+      return { ...state, selectedTrackId: action.trackId, selectedClipId: action.trackId === state.selectedTrackId ? state.selectedClipId : null }
 
     case 'SELECT_CLIP':
       return { ...state, selectedTrackId: action.trackId, selectedClipId: action.clipId }
@@ -187,7 +189,8 @@ export function reducer(state: AppState, action: Action): AppState {
       if (state.session.tracks.length >= TRACK_COUNT_MAX) return state
       const index = state.session.tracks.length
       const track = sanitizeTrack({ id: action.id, name: `Track ${index + 1}` }, index)
-      return { ...state, session: { ...state.session, tracks: [...state.session.tracks, track] }, selectedTrackId: track.id }
+      // A brand-new track has no clips, so any prior clip selection is stale.
+      return { ...state, session: { ...state.session, tracks: [...state.session.tracks, track] }, selectedTrackId: track.id, selectedClipId: null }
     }
 
     case 'REMOVE_TRACK': {

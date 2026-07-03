@@ -104,6 +104,20 @@ describe('trimIn', () => {
     expect(out.durationSec).toBeGreaterThan(0)
     expect(out.startSec).toBeLessThan(clipEndSec(makeClip()))
   })
+
+  it('clamps startSec to 0 without shifting the audio (offset stops short of its lead-in)', () => {
+    // startSec 1 with 5s of lead-in: the offset clamp alone would allow delta
+    // down to -5 and drive startSec to -4. The startSec>=0 invariant must bind
+    // first (delta = -1), or the persistence sanitizer later clamps startSec to
+    // 0 without compensating offset/duration and shifts the audio.
+    const clip = makeClip({ startSec: 1, offsetSec: 5, durationSec: 10 })
+    const out = trimIn(clip, -2)
+    expect(out.startSec).toBe(0)
+    expect(out.offsetSec).toBeCloseTo(4) // 5 + (-1), still positive
+    expect(out.durationSec).toBeCloseTo(11) // 10 - (-1)
+    // Source stays locked: the timeline out-point is unchanged.
+    expect(clipEndSec(out)).toBeCloseTo(clipEndSec(clip))
+  })
 })
 
 describe('trimOut', () => {

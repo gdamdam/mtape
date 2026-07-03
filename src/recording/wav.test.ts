@@ -72,8 +72,9 @@ describe('encodeWav header', () => {
       expect(h.bitsPerSample).toBe(bitDepth)
       expect(h.blockAlign).toBe(blockAlign)
       expect(h.byteRate).toBe(44100 * blockAlign)
-      expect(h.dataSize).toBe(frames * blockAlign)
-      expect(h.chunkSize).toBe(36 + frames * blockAlign)
+      const dataSize = frames * blockAlign
+      expect(h.dataSize).toBe(dataSize) // data field is the unpadded sample count
+      expect(h.chunkSize).toBe(36 + dataSize + (dataSize & 1)) // RIFF size counts any pad byte
     })
   }
 
@@ -90,6 +91,27 @@ describe('encodeWav header', () => {
       bitDepth: 24,
     })
     expect(buf.byteLength).toBe(44 + frames * (2 * 3))
+  })
+
+  it('word-aligns an odd-sized data chunk with a trailing zero pad byte [L1]', () => {
+    // 24-bit mono, 3 frames -> dataSize = 9 (odd). RIFF requires an even chunk,
+    // so a pad byte follows the data. The pad counts in the RIFF size but not
+    // the data chunk's own size field.
+    const buf = encodeWav([new Float32Array(3)], { sampleRate: 44100, bitDepth: 24 })
+    const view = new DataView(buf)
+    expect(view.getUint32(40, true)).toBe(9) // data chunk size = actual samples
+    expect(buf.byteLength).toBe(44 + 9 + 1) // header + data + pad
+    expect(view.getUint32(4, true)).toBe(36 + 9 + 1) // RIFF size counts the pad
+    expect(buf.byteLength % 2).toBe(0) // whole file word-aligned
+    expect(view.getUint8(buf.byteLength - 1)).toBe(0) // pad byte is zero
+  })
+
+  it('does not pad an already-even data chunk', () => {
+    // 24-bit mono, 2 frames -> dataSize = 6 (even): no pad.
+    const buf = encodeWav([new Float32Array(2)], { sampleRate: 44100, bitDepth: 24 })
+    const view = new DataView(buf)
+    expect(buf.byteLength).toBe(44 + 6)
+    expect(view.getUint32(4, true)).toBe(36 + 6)
   })
 })
 
@@ -172,6 +194,15 @@ describe('encodeWav validation', () => {
 
   it('throws when no channels are supplied', () => {
     expect(() => encodeWav([], { sampleRate: 44100 })).toThrow(/at least one channel/)
+  })
+
+  it('throws on non-positive-integer sample rates [L9]', () => {
+    const chans = [new Float32Array(4)]
+    expect(() => encodeWav(chans, { sampleRate: 0 })).toThrow(/sampleRate must be a positive integer/)
+    expect(() => encodeWav(chans, { sampleRate: -44100 })).toThrow(/sampleRate must be a positive integer/)
+    expect(() => encodeWav(chans, { sampleRate: NaN })).toThrow(/sampleRate must be a positive integer/)
+    expect(() => encodeWav(chans, { sampleRate: 44100.5 })).toThrow(/sampleRate must be a positive integer/)
+    expect(() => encodeWav(chans, { sampleRate: Infinity })).toThrow(/sampleRate must be a positive integer/)
   })
 
   it('supports N>=1 channels (e.g. 3-channel)', () => {

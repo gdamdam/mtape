@@ -2,7 +2,7 @@
 // monitor, fader + pan, a 3-band EQ, the tape-character section, and a live
 // meter. All edits flow through the reducer; capture/import go through controls.
 
-import { useRef, type CSSProperties, type Dispatch, type ReactNode, type RefObject } from 'react'
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type Dispatch, type ReactNode, type RefObject } from 'react'
 import type { Action } from '../app/state'
 import type { MeterSnapshot, UiControls } from '../app/useEngine'
 import {
@@ -44,16 +44,29 @@ export function TrackStrip({ track, index, selected, canRemove, controls, dispat
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const patch = (p: Partial<Track>): void => dispatch({ type: 'SET_TRACK_PARAM', trackId: track.id, patch: p })
 
-  const onInputChange = (kind: TrackInputKind): void => {
+  // Local edit buffer for the track name so a mid-edit blank isn't snapped back
+  // to the previous name per keystroke; commit on blur / Enter.
+  const [nameText, setNameText] = useState(track.name)
+  const [editingName, setEditingName] = useState(false)
+  useEffect(() => {
+    if (!editingName) setNameText(track.name)
+  }, [track.name, editingName])
+
+  const onInputChange = (select: HTMLSelectElement): void => {
+    const kind = select.value as TrackInputKind
     if (kind === 'file') {
-      patch({ input: 'file' })
+      // The select is controlled by track.input; leaving it on 'file' would make
+      // a second "File…" pick fire no onChange (and cancelling the picker would
+      // wedge it). Revert the visible selection so the picker always reopens.
+      select.value = track.input
       fileInputRef.current?.click()
       return
     }
     void controls.chooseInput(track.id, kind)
   }
 
-  const level = (): number => meterRef.current?.tracks[track.id]?.peak ?? 0
+  // Stable getter identity so Meter's rAF loop isn't torn down on every dispatch.
+  const level = useCallback((): number => meterRef.current?.tracks[track.id]?.peak ?? 0, [meterRef, track.id])
 
   return (
     <section className={`strip panel${selected ? ' is-selected' : ''}`} aria-label={`Track: ${track.name}`} onClick={() => dispatch({ type: 'SELECT_TRACK', trackId: track.id })}>
@@ -62,8 +75,16 @@ export function TrackStrip({ track, index, selected, canRemove, controls, dispat
         <input
           className="strip__name"
           aria-label="Track name"
-          value={track.name}
-          onChange={(e) => patch({ name: e.currentTarget.value })}
+          value={editingName ? nameText : track.name}
+          onFocus={() => setEditingName(true)}
+          onChange={(e) => setNameText(e.currentTarget.value)}
+          onBlur={(e) => {
+            setEditingName(false)
+            patch({ name: e.currentTarget.value })
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') e.currentTarget.blur()
+          }}
         />
         <button
           type="button"
@@ -83,7 +104,7 @@ export function TrackStrip({ track, index, selected, canRemove, controls, dispat
       <div className="strip__row">
         <label className="field field--inline">
           <span className="label">In</span>
-          <select className="readout" value={track.input} onChange={(e) => onInputChange(e.currentTarget.value as TrackInputKind)}>
+          <select className="readout" value={track.input} onChange={(e) => onInputChange(e.currentTarget)}>
             {INPUT_OPTIONS.map((o) => (
               <option key={o.value} value={o.value}>
                 {o.label}
@@ -105,7 +126,7 @@ export function TrackStrip({ track, index, selected, canRemove, controls, dispat
       </div>
 
       <div className="strip__buttons">
-        <Toggle label="●" tone="record" pressed={track.armed} onToggle={() => controls.armTrack(track.id)} title="Record-arm" />
+        <Toggle label="●" tone="record" pressed={track.armed} onToggle={() => patch({ armed: !track.armed })} title="Record-arm" />
         <Toggle label="M" pressed={track.mute} onToggle={() => patch({ mute: !track.mute })} title="Mute" />
         <Toggle label="S" tone="play" pressed={track.solo} onToggle={() => patch({ solo: !track.solo })} title="Solo" />
         <Toggle label="Mon" pressed={track.monitor} onToggle={() => patch({ monitor: !track.monitor })} title="Input monitor — can cause acoustic feedback" />

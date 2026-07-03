@@ -13,7 +13,6 @@ import { useCallback, useEffect, useMemo, useRef, type Dispatch, type RefObject 
 import type { Action, AppState } from './state'
 import type { DecodedAudio, EngineControls } from '../audio/engineApi'
 import type { EngineEvent, TrackArrangement } from '../audio/messages'
-import { compensateRecordStart } from '../transport/timing'
 import { clipEndSec } from '../clips/clipMath'
 import { renderSession, type SourceMap } from '../render/renderSession'
 import { encodeWav, type BitDepth } from '../recording/wav'
@@ -128,10 +127,25 @@ export function useEngine(dispatch: Dispatch<Action>, stateRef: RefObject<AppSta
   const sourceCacheRef = useRef<Map<string, DecodedAudio>>(new Map())
   // recordChunk payloads accumulate here per audioId until recordComplete.
   const recChunksRef = useRef<Map<string, Float32Array[][]>>(new Map())
+  // audioIds already pushed into the live engine, so the rehydration effect and
+  // the import/record paths don't double-load (or reload after a session swap). (H4)
+  const loadedAudioRef = useRef<Set<string>>(new Set())
+  // In-flight engine-creation promise, so two rapid start() calls share one
+  // engine instead of racing to build two (the first would leak). (M12)
+  const enginePromiseRef = useRef<Promise<EngineControls> | null>(null)
+  // Signatures of the last declarative state pushed to the engine, so an
+  // unrelated dispatch (e.g. a per-pointermove MOVE_CLIP drag frame) doesn't
+  // re-post unchanged tempo/loop/master/arrangement to the worklet. (L12)
+  const lastPushRef = useRef<{ tempo?: number; loop?: string; metro?: string; master?: string; arr?: string }>({})
 
   // Read latest state each render; the ref is refreshed by App before this runs,
   // so these values are current and safe as effect dependencies.
   const { session, audioReady } = stateRef.current
+
+  // The pristine session at mount. Autosave is skipped while the working session
+  // is still this exact reference (no user edit / no load has happened), so a
+  // fresh empty default isn't persisted on every page load / share-link view. (M11)
+  const initialSessionRef = useRef(session)
 
   // Keep the injected factory in a ref so `ensureEngine` stays referentially
   // stable (opts is often a fresh object every render).
@@ -153,6 +167,19 @@ export function useEngine(dispatch: Dispatch<Action>, stateRef: RefObject<AppSta
     const channels = Array.from({ length: buffer.numberOfChannels }, (_, c) => Float32Array.from(buffer.getChannelData(c)))
     return { audioId: newId(), channels, sampleRate: buffer.sampleRate, durationSec: buffer.duration }
   }
+
+  /**
+   * Push a decoded asset into the live engine. `loadAudio` TRANSFERS (detaches)
+   * the channel buffers it is handed, so we give it a fresh copy and keep our
+   * originals intact for WAV encoding, the source cache, and offline render —
+   * otherwise the caller's arrays zero out and takes persist as empty WAVs. (H1)
+   */
+  const loadIntoEngine = useCallback((decoded: DecodedAudio): void => {
+    const e = engineRef.current
+    if (!e) return
+    e.loadAudio({ ...decoded, channels: decoded.channels.map((c) => c.slice()) })
+    loadedAudioRef.current.add(decoded.audioId)
+  }, [])
 
   /** Assemble a SourceMap for renderSession from cache, re-decoding on a miss. */
   const gatherSources = useCallback(async (s: Session): Promise<SourceMap> => {
@@ -204,7 +231,6 @@ export function useEngine(dispatch: Dispatch<Action>, stateRef: RefObject<AppSta
     async (ev: Extract<EngineEvent, { type: 'recordComplete' }>): Promise<void> => {
       const chunks = recChunksRef.current.get(ev.audioId) ?? []
       recChunksRef.current.delete(ev.audioId)
-      const sampleRate = audioCtxRef.current?.sampleRate ?? 48000
       const nCh = chunks[0]?.length ?? 0
       if (nCh > 0) {
         const channels = Array.from({ length: nCh }, (_, c) => {
@@ -217,20 +243,27 @@ export function useEngine(dispatch: Dispatch<Action>, stateRef: RefObject<AppSta
           }
           return out
         })
-        const decoded: DecodedAudio = { audioId: ev.audioId, channels, sampleRate, durationSec: channels[0].length / sampleRate }
+        // Sample rate of the ENGINE's capture context. The decode-only
+        // audioCtxRef may be a different rate or absent on a record-first flow,
+        // so derive the true rate from the take's own frame count and reported
+        // duration (worklet: durationSec = frames / captureRate). (H3)
+        const frames = channels[0].length
+        const sampleRate = ev.durationSec > 0 ? Math.round(frames / ev.durationSec) : (audioCtxRef.current?.sampleRate ?? 48000)
+        const decoded: DecodedAudio = { audioId: ev.audioId, channels, sampleRate, durationSec: frames / sampleRate }
         sourceCacheRef.current.set(ev.audioId, decoded)
-        engineRef.current?.loadAudio(decoded)
+        loadIntoEngine(decoded) // copies channels; `channels` below stays intact (H1)
         try {
           await putAudio(ev.audioId, new Blob([encodeWav(channels, { sampleRate })], { type: 'audio/wav' }))
         } catch {
           // Non-fatal: the take still plays from the in-memory cache this session.
         }
       }
-      const latency = engineRef.current?.latencySec() ?? 0
       const clip: Clip = {
         id: newId(),
         audioId: ev.audioId,
-        startSec: compensateRecordStart(ev.startSec, latency),
+        // ev.startSec is ALREADY latency-compensated by AudioEngine.handleEvent;
+        // compensating again here landed every take 2× latency early. (H2)
+        startSec: ev.startSec,
         offsetSec: 0,
         durationSec: ev.durationSec,
         gainDb: 0,
@@ -238,7 +271,7 @@ export function useEngine(dispatch: Dispatch<Action>, stateRef: RefObject<AppSta
       }
       dispatch({ type: 'ADD_CLIP', trackId: ev.trackId, clip })
     },
-    [dispatch],
+    [dispatch, loadIntoEngine],
   )
 
   const handleEvent = useCallback(
@@ -273,11 +306,22 @@ export function useEngine(dispatch: Dispatch<Action>, stateRef: RefObject<AppSta
 
   const ensureEngine = useCallback(async (): Promise<EngineControls> => {
     if (engineRef.current) return engineRef.current
-    const factory = createEngineRef.current ?? (await import('../audio/AudioEngine')).createEngine
-    const engine = factory()
-    offRef.current = engine.onEvent(handleEvent)
-    engineRef.current = engine
-    return engine
+    // Reuse an in-flight build so concurrent start() calls don't each await the
+    // dynamic import and construct a second engine (the first would leak). (M12)
+    if (enginePromiseRef.current) return enginePromiseRef.current
+    const p = (async (): Promise<EngineControls> => {
+      const factory = createEngineRef.current ?? (await import('../audio/AudioEngine')).createEngine
+      const engine = factory()
+      offRef.current = engine.onEvent(handleEvent)
+      engineRef.current = engine
+      return engine
+    })()
+    // Clear the memo on failure so a later start() can retry the import.
+    p.catch(() => {
+      enginePromiseRef.current = null
+    })
+    enginePromiseRef.current = p
+    return p
   }, [handleEvent])
 
   // Tear down on unmount.
@@ -286,24 +330,90 @@ export function useEngine(dispatch: Dispatch<Action>, stateRef: RefObject<AppSta
       offRef.current()
       engineRef.current?.dispose()
       engineRef.current = null
+      enginePromiseRef.current = null
       audioCtxRef.current?.close().catch(() => {})
       audioCtxRef.current = null
     }
   }, [])
 
   // Push declarative state whenever the session changes (once audio is live).
+  // Each piece is diffed against the last value sent so a drag's per-frame
+  // MOVE_CLIP dispatch doesn't re-post unchanged tempo/loop/master — and doesn't
+  // re-post the whole arrangement when nothing in it actually changed. (L12)
   useEffect(() => {
     const e = engineRef.current
     if (!e || !audioReady) return
-    e.setTempo(session.tempo)
-    e.setLoop(session.loop)
-    e.setMetronome(session.metronome, session.countInBars)
-    e.setMaster(session.master)
-    e.setArrangement(toArrangement(session.tracks))
+    const p = lastPushRef.current
+    if (p.tempo !== session.tempo) {
+      e.setTempo(session.tempo)
+      p.tempo = session.tempo
+    }
+    const loopKey = JSON.stringify(session.loop)
+    if (p.loop !== loopKey) {
+      e.setLoop(session.loop)
+      p.loop = loopKey
+    }
+    const metroKey = `${session.metronome}:${session.countInBars}`
+    if (p.metro !== metroKey) {
+      e.setMetronome(session.metronome, session.countInBars)
+      p.metro = metroKey
+    }
+    const masterKey = JSON.stringify(session.master)
+    if (p.master !== masterKey) {
+      e.setMaster(session.master)
+      p.master = masterKey
+    }
+    const arr = toArrangement(session.tracks)
+    const arrKey = JSON.stringify(arr)
+    if (p.arr !== arrKey) {
+      e.setArrangement(arr)
+      p.arr = arrKey
+    }
   }, [session, audioReady])
 
-  // Debounced autosave of the working session.
+  // Rehydrate engine audio for the current session: LOAD_SESSION (Open / import /
+  // share-link) pushes clip placements but the samples live in IndexedDB, so
+  // without this a reloaded/opened session plays total silence. Decode each
+  // referenced blob not already loaded and hand it to the engine. (H4)
   useEffect(() => {
+    const e = engineRef.current
+    if (!e || !audioReady) return
+    let cancelled = false
+    const ids = new Set<string>()
+    for (const t of session.tracks) for (const c of t.clips) ids.add(c.audioId)
+    void (async () => {
+      for (const id of ids) {
+        if (loadedAudioRef.current.has(id)) continue
+        const cached = sourceCacheRef.current.get(id)
+        if (cached) {
+          loadIntoEngine(cached) // already in RAM this session; just push it
+          continue
+        }
+        try {
+          const blob = await getAudio(id)
+          const ctx = getAudioContext()
+          if (!blob || !ctx || cancelled) continue
+          const buffer = await ctx.decodeAudioData(await blob.arrayBuffer())
+          const channels = Array.from({ length: buffer.numberOfChannels }, (_, c) => Float32Array.from(buffer.getChannelData(c)))
+          const decoded: DecodedAudio = { audioId: id, channels, sampleRate: buffer.sampleRate, durationSec: buffer.duration }
+          sourceCacheRef.current.set(id, decoded)
+          if (cancelled) continue
+          loadIntoEngine(decoded)
+        } catch {
+          // Leave silent — matches the missing-audio placeholder in the timeline.
+        }
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [session, audioReady, loadIntoEngine])
+
+  // Debounced autosave of the working session. Skipped while the session is the
+  // untouched mount-time default (no edit / load has produced a new reference),
+  // so a fresh empty session isn't persisted on every page load or link view. (M11)
+  useEffect(() => {
+    if (session === initialSessionRef.current) return
     const t = setTimeout(() => {
       void persist(session)
     }, 600)
@@ -318,7 +428,9 @@ export function useEngine(dispatch: Dispatch<Action>, stateRef: RefObject<AppSta
       if (hash && hash.length > 1) {
         const shared = decodeSessionLink(hash)
         if (shared && !cancelled) {
-          dispatch({ type: 'LOAD_SESSION', session: shared })
+          // Mint a fresh id so this decoded arrangement is a "copy of" — autosave
+          // must not clobber the newer stored session that shares the link's id. (H9)
+          dispatch({ type: 'LOAD_SESSION', session: { ...shared, id: newId() } })
           dispatch({ type: 'SET_STATUS', status: 'Opened a shared arrangement — audio is not included in a link.' })
           return
         }
@@ -335,9 +447,24 @@ export function useEngine(dispatch: Dispatch<Action>, stateRef: RefObject<AppSta
   const controls = useMemo<UiControls>(() => {
     return {
       async start() {
-        const e = await ensureEngine()
-        await e.start()
-        dispatch({ type: 'SET_AUDIO_READY', ready: true })
+        let e: EngineControls
+        try {
+          e = await ensureEngine()
+        } catch {
+          // The engine is a lazy dynamic import. A tab opened before a deploy can
+          // no longer fetch its old hashed chunk (gone from the server, and the
+          // new service worker purged it from cache), so the import rejects. Left
+          // uncaught this rejection is swallowed by the gate's `void start()` and
+          // the button silently does nothing — surface a reload prompt. (M3)
+          dispatch({ type: 'SET_STATUS', status: 'A new version is available — reload the page to start audio.' })
+          return
+        }
+        try {
+          await e.start()
+          dispatch({ type: 'SET_AUDIO_READY', ready: true })
+        } catch {
+          dispatch({ type: 'SET_STATUS', status: 'Could not start audio. Please try again.' })
+        }
       },
       play() {
         engineRef.current?.play()
@@ -379,7 +506,7 @@ export function useEngine(dispatch: Dispatch<Action>, stateRef: RefObject<AppSta
         try {
           const decoded = await decodeFile(file)
           sourceCacheRef.current.set(decoded.audioId, decoded)
-          engineRef.current?.loadAudio(decoded)
+          loadIntoEngine(decoded) // copies channels so the cached source stays intact (H1)
           try {
             await putAudio(decoded.audioId, file)
           } catch {
@@ -451,15 +578,23 @@ export function useEngine(dispatch: Dispatch<Action>, stateRef: RefObject<AppSta
       },
       async importJson(file: File) {
         try {
-          const session = parseImport(await file.text())
-          dispatch({ type: 'LOAD_SESSION', session })
+          const imported = parseImport(await file.text())
+          // Fresh id: an imported export is a copy, so autosave can't overwrite a
+          // newer stored session that reused the same id. (H9)
+          dispatch({ type: 'LOAD_SESSION', session: { ...imported, id: newId() } })
           dispatch({ type: 'SET_STATUS', status: 'Imported arrangement — link/JSON does not carry the audio blobs.' })
         } catch (err) {
           dispatch({ type: 'SET_STATUS', status: err instanceof Error ? err.message : 'Could not import that file.' })
         }
       },
       async copyShareLink() {
-        const token = encodeSessionLink(stateRef.current.session)
+        // encodeSessionLink returns null when the arrangement exceeds the link
+        // size limit; don't write an undecodable hash or claim success. (H8)
+        const token: string | null = encodeSessionLink(stateRef.current.session)
+        if (token === null) {
+          dispatch({ type: 'SET_STATUS', status: 'This arrangement is too large to share as a link — export a file instead.' })
+          return
+        }
         if (typeof location !== 'undefined') location.hash = token
         try {
           const url = typeof location !== 'undefined' ? `${location.origin}${location.pathname}#${token}` : token
@@ -470,8 +605,8 @@ export function useEngine(dispatch: Dispatch<Action>, stateRef: RefObject<AppSta
         }
       },
     }
-    // stateRef/posRef/etc are stable refs; dispatch/ensureEngine/gatherSources/persist are memoized.
-  }, [dispatch, ensureEngine, gatherSources, persist, stateRef])
+    // stateRef/posRef/etc are stable refs; dispatch/ensureEngine/gatherSources/persist/loadIntoEngine are memoized.
+  }, [dispatch, ensureEngine, gatherSources, persist, stateRef, loadIntoEngine])
 
   return { controls, posRef, meterRef }
 }

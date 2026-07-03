@@ -39,9 +39,10 @@ export function serializeExport(exported: SessionExport): string {
 
 /**
  * Parse and validate an exported file back into a Session. Throws a clear Error
- * only for a wrong/missing envelope kind or non-JSON text — those signal "this
- * is not an mtape session file". A well-formed envelope with a malformed inner
- * session degrades gracefully via sanitizeSession rather than throwing.
+ * for a wrong/missing envelope kind, non-JSON text, an unsupported version, or a
+ * missing `session` — those all signal "this file cannot be trusted to restore".
+ * A well-formed, version-matched envelope whose inner session is merely malformed
+ * degrades gracefully via sanitizeSession rather than throwing.
  */
 export function parseImport(text: string): Session {
   let parsed: unknown
@@ -56,6 +57,24 @@ export function parseImport(text: string): Session {
   const envelope = parsed as Partial<SessionExport>
   if (envelope.kind !== EXPORT_KIND) {
     throw new Error(`Not an mtape session file (expected kind "${EXPORT_KIND}", got "${String(envelope.kind)}").`)
+  }
+  // A missing inner session is a broken/incomplete envelope, not a coercible one:
+  // sanitizing `undefined` into a near-empty default would silently import an
+  // empty arrangement (and autosave could then persist it — see H9).
+  if (envelope.session == null) {
+    throw new Error('Not a valid mtape session file: envelope has no "session".')
+  }
+  // Refuse envelopes from a newer/renamed format — the declared shape may differ
+  // from what our sanitizer expects, so importing would silently drop data.
+  if (envelope.exportVersion !== EXPORT_VERSION) {
+    throw new Error(
+      `Unsupported mtape export version ${String(envelope.exportVersion)} (this build reads version ${EXPORT_VERSION}).`,
+    )
+  }
+  if (envelope.schemaVersion !== SESSION_SCHEMA_VERSION) {
+    throw new Error(
+      `Unsupported mtape session schema version ${String(envelope.schemaVersion)} (this build reads version ${SESSION_SCHEMA_VERSION}).`,
+    )
   }
   // Inner session is untrusted — coerce rather than trust the declared shape.
   return sanitizeSession(envelope.session)

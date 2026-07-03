@@ -59,7 +59,19 @@ export function createMockEngine(opts: MockEngineOptions = {}): MockEngine {
       arrangements.push(tracks)
       log('setArrangement', tracks)
     },
-    loadAudio: (audio: DecodedAudio) => log('loadAudio', audio.audioId),
+    loadAudio: (audio: DecodedAudio) => {
+      log('loadAudio', audio.audioId)
+      // Mirror the real engine: postMessage transfers the channel ArrayBuffers,
+      // detaching the ones it is handed. structuredClone with `transfer` performs
+      // the same detach, so a caller that reuses the buffers it passed in (the H1
+      // bug) is caught by tests instead of silently succeeding on the no-op mock.
+      try {
+        const transfer = audio.channels.map((c) => c.buffer as ArrayBuffer)
+        structuredClone({ channels: audio.channels }, { transfer })
+      } catch {
+        // Environment without structuredClone-transfer support: skip the detach.
+      }
+    },
     unloadAudio: (audioId: string) => log('unloadAudio', audioId),
     async captureTab() {
       log('captureTab')

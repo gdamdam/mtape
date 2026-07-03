@@ -40,18 +40,27 @@ export function encodeWav(channels: Float32Array[], opts: WavEncodeOptions): Arr
     }
   }
 
+  if (!Number.isInteger(opts.sampleRate) || opts.sampleRate <= 0) {
+    throw new Error(`encodeWav: sampleRate must be a positive integer, got ${opts.sampleRate}`)
+  }
+
   const bitDepth: BitDepth = opts.bitDepth ?? 16
   const bytesPerSample = bitDepth / 8
   const blockAlign = numChannels * bytesPerSample
   const byteRate = opts.sampleRate * blockAlign
   const dataSize = frames * blockAlign
+  // RIFF chunks must be word-aligned: an odd-sized data chunk needs a trailing
+  // zero pad byte. The pad counts toward the RIFF size but NOT the data chunk's
+  // own size field. The extra byte is already zero (fresh ArrayBuffer).
+  const padByte = dataSize & 1
+  const riffDataSize = dataSize + padByte
 
-  const buffer = new ArrayBuffer(44 + dataSize)
+  const buffer = new ArrayBuffer(44 + riffDataSize)
   const view = new DataView(buffer)
 
   // --- 44-byte canonical header ---
   writeTag(view, 0, 'RIFF')
-  view.setUint32(4, 36 + dataSize, true) // chunkSize = header-after-this + data
+  view.setUint32(4, 36 + riffDataSize, true) // chunkSize = header-after-this + data (+ pad)
   writeTag(view, 8, 'WAVE')
   writeTag(view, 12, 'fmt ')
   view.setUint32(16, 16, true) // fmt chunk size for PCM

@@ -2,7 +2,7 @@
 // varispeed, the master meter with a clip LED, and the mixdown/stems bounce
 // controls with a bit-depth choice.
 
-import { useState, type Dispatch, type ReactNode, type RefObject } from 'react'
+import { useCallback, useState, type Dispatch, type ReactNode, type RefObject } from 'react'
 import type { Action, AppState } from '../app/state'
 import type { MeterSnapshot, UiControls } from '../app/useEngine'
 import type { BitDepth } from '../recording/wav'
@@ -32,10 +32,13 @@ export function MasterSection({ state, controls, dispatch, meterRef }: MasterSec
   const { master } = state.session
   const [bitDepth, setBitDepth] = useState<BitDepth>(16)
 
-  const level = (): number => {
+  // Stable getter identities so Meter's rAF loop isn't torn down on every
+  // dispatch (each reducer render otherwise minted fresh closures).
+  const level = useCallback((): number => {
     const m = meterRef.current
     return m ? Math.max(m.masterPeakL, m.masterPeakR) : 0
-  }
+  }, [meterRef])
+  const clip = useCallback((): boolean => meterRef.current?.clip ?? false, [meterRef])
 
   return (
     <section className="master panel" aria-label="Master">
@@ -43,7 +46,7 @@ export function MasterSection({ state, controls, dispatch, meterRef }: MasterSec
 
       <div className="master__controls">
         <Fader label="Out" valueDb={master.gainDb} min={GAIN_DB_MIN} max={GAIN_DB_MAX} onChange={(gainDb) => dispatch({ type: 'SET_MASTER', patch: { gainDb } })} />
-        <Meter getLevel={level} getClip={() => meterRef.current?.clip ?? false} label="Master level" />
+        <Meter getLevel={level} getClip={clip} label="Master level" />
         <div className="master__knobs">
           <Knob label="Drive" value={master.drive} min={DRIVE_MIN} max={DRIVE_MAX} step={0.01} display={formatPct(master.drive)} onChange={(drive) => dispatch({ type: 'SET_MASTER', patch: { drive } })} />
           <Knob label="Ceil" value={master.limiterCeilingDb} min={LIMITER_CEILING_DB_MIN} max={LIMITER_CEILING_DB_MAX} step={0.1} display={formatDb(master.limiterCeilingDb)} onChange={(limiterCeilingDb) => dispatch({ type: 'SET_MASTER', patch: { limiterCeilingDb } })} />

@@ -39,12 +39,18 @@ export function setClipStart(clip: Clip, startSec: number): Clip {
  * δ walks the source offset by the same δ and shrinks the sounding duration by
  * δ, so the audible material under the moved edge stays put. δ is clamped so the
  * offset never goes negative and the duration never drops below MIN_DURATION_SEC
- * (which also prevents the new start from reaching/passing the clip end).
+ * (which also prevents the new start from reaching/passing the clip end). δ is
+ * also floored so the new start never crosses 0, upholding the same startSec >= 0
+ * invariant that moveClip/setClipStart enforce — otherwise the persistence
+ * sanitizer would later clamp startSec without compensating offset/duration and
+ * shift the audio.
  */
 export function trimIn(clip: Clip, newStartSec: number): Clip {
   const rawDelta = newStartSec - clip.startSec
-  // Left bound: offsetSec + δ >= 0. Right bound: durationSec - δ >= epsilon.
-  const delta = clamp(rawDelta, -clip.offsetSec, clip.durationSec - MIN_DURATION_SEC)
+  // Left bound: offsetSec + δ >= 0 AND startSec + δ >= 0. Right bound:
+  // durationSec - δ >= epsilon.
+  const minDelta = Math.max(-clip.offsetSec, -clip.startSec)
+  const delta = clamp(rawDelta, minDelta, clip.durationSec - MIN_DURATION_SEC)
   return {
     ...clip,
     startSec: clip.startSec + delta,

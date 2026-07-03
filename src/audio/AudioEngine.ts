@@ -40,10 +40,14 @@ export class AudioEngine implements EngineControls {
   private disposed = false
   private latencySecValue = 0
 
-  // Current take: minted at record start, applied to the worklet's raw events.
-  // The armed trackId itself is authoritatively reported back by the worklet in
-  // its record events, so we don't duplicate it here.
-  private recAudioId = ''
+  // FIFO of take ids minted at each record start but not yet completed. The
+  // worklet posts record events with an empty id and RAW timing; we assign ids
+  // in completion order so a stop→record burst can't glue take 1's tail into
+  // take 2 (the id is bound to the take, not to whenever the event is handled). (M1)
+  private recAudioIds: string[] = []
+  // Mirrors the worklet's record state so a second record() while recording is
+  // ignored rather than minting a stray id / clobbering the active take. (H5)
+  private recording = false
 
   private readonly onVisibility = (): void => {
     if (typeof document !== 'undefined' && document.visibilityState === 'visible') void this.tryResume()
@@ -76,9 +80,13 @@ export class AudioEngine implements EngineControls {
         (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)()
     this.ctx = ctx
     if (ctx.state === 'suspended') await ctx.resume()
+    // dispose() may have run during the await above; don't build a graph on a
+    // context that is being torn down (StrictMode mount/unmount, tab close). (L4)
+    if (this.disposed) return
 
     if (!this.node) {
       await ctx.audioWorklet.addModule(mtapeWorkletUrl)
+      if (this.disposed) return
       const node = new AudioWorkletNode(ctx, 'mtape-processor', {
         numberOfInputs: 1,
         numberOfOutputs: 1,
@@ -93,6 +101,7 @@ export class AudioEngine implements EngineControls {
       this.post({ type: 'setLatency', latencySec: this.latencySecValue })
     }
 
+    if (this.disposed) return
     if (typeof document !== 'undefined') {
       document.addEventListener('visibilitychange', this.onVisibility)
       window.addEventListener('pageshow', this.onVisibility)
@@ -120,13 +129,24 @@ export class AudioEngine implements EngineControls {
   }
 
   stop(): void {
+    // Clear the flag now so an immediate record() is honoured; the take id stays
+    // queued until the worklet's recordComplete arrives (see handleEvent). (M1)
+    this.recording = false
     this.post({ type: 'transport', action: 'stop' })
   }
 
   record(): void {
-    if (!this.node) return
-    // Mint the take's asset id up front; the worklet's raw events inherit it.
-    this.recAudioId = crypto.randomUUID()
+    if (!this.node || !this.ctx) return
+    if (this.recording) return // already recording — ignore double-record (H5)
+    this.recording = true
+    // Refresh latency per take: outputLatency is typically 0 until playback has
+    // begun and can change on a device switch, so a value snapshotted at context
+    // creation is stale. (M4)
+    this.latencySecValue = (this.ctx.baseLatency || 0) + (this.ctx.outputLatency || 0)
+    this.post({ type: 'setLatency', latencySec: this.latencySecValue })
+    // Mint the take's asset id up front; the worklet's raw events inherit it in
+    // completion order via the FIFO queue.
+    this.recAudioIds.push(crypto.randomUUID())
     this.post({ type: 'transport', action: 'record' })
   }
 
@@ -231,13 +251,19 @@ export class AudioEngine implements EngineControls {
     // completion, latency-compensated start) before fanning out.
     let out = event
     if (event.type === 'recordChunk') {
-      out = { ...event, audioId: this.recAudioId }
+      // Head of the queue is the in-progress take; don't dequeue until completion.
+      out = { ...event, audioId: this.recAudioIds[0] ?? '' }
     } else if (event.type === 'recordComplete') {
+      // Bind to (and retire) the oldest outstanding take id, so late-arriving
+      // completion events after a stop→record burst still tag the right take. (M1)
+      const audioId = this.recAudioIds.shift() ?? ''
       out = {
         ...event,
-        audioId: this.recAudioId,
+        audioId,
         startSec: compensateRecordStart(event.startSec, this.latencySecValue),
       }
+    } else if (event.type === 'ended') {
+      this.recording = false
     }
     for (const l of this.listeners) l(out)
   }

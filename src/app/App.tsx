@@ -36,7 +36,12 @@ export function App(): ReactNode {
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (e.code !== 'Space' || e.repeat) return
-      if (isTypingTarget(document.activeElement)) return
+      const el = document.activeElement
+      // Don't hijack Space while a control is focused — Space must activate the
+      // focused button (incl. the "Start audio" gate) or type into a field.
+      // Only steal it when focus rests on the body/timeline.
+      if (isTypingTarget(el)) return
+      if (el instanceof HTMLElement && el.tagName === 'BUTTON') return
       e.preventDefault()
       if (!stateRef.current.audioReady) return
       if (stateRef.current.playing) controls.stop()
@@ -51,6 +56,11 @@ export function App(): ReactNode {
 
   return (
     <div className="app">
+      {/* While the audio gate is up the app must not be interactable behind it
+          (the gate is aria-modal but that alone doesn't block tab/click). inert
+          on a display:contents wrapper neutralises the content without altering
+          the flex layout, and leaves the gate itself live. */}
+      <div style={{ display: 'contents' }} inert={!state.audioReady}>
       <header className="app__header panel">
         <div className="app__brand">
           <span className="nameplate app__wordmark">MTAPE</span>
@@ -87,6 +97,7 @@ export function App(): ReactNode {
       </div>
 
       <SessionBar state={state} controls={controls} dispatch={dispatch} />
+      </div>
 
       {!state.audioReady ? (
         <div className="gate" role="dialog" aria-modal="true" aria-label="Start audio">
@@ -96,6 +107,17 @@ export function App(): ReactNode {
             <button type="button" className="gate__start" onClick={() => void controls.start()}>
               Start audio
             </button>
+            {/* The status banner lives inside the inert wrapper, so a start
+                failure (e.g. a stale post-deploy engine chunk) would be invisible
+                behind the gate — surface it here with a reload affordance. (M3) */}
+            {state.status ? (
+              <div className="gate__error readout" role="alert">
+                <span>{state.status}</span>
+                <button type="button" className="gate__reload" onClick={() => window.location.reload()}>
+                  Reload
+                </button>
+              </div>
+            ) : null}
           </div>
         </div>
       ) : null}

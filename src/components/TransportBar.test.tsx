@@ -41,12 +41,29 @@ describe('TransportBar', () => {
     expect(controls.stop).toHaveBeenCalledTimes(1)
   })
 
-  it('dispatches a clamped tempo edit', () => {
+  it('commits a tempo edit on blur (not per keystroke)', () => {
     const dispatch = vi.fn()
     const posRef = { current: 0 }
     render(<TransportBar state={initialState(defaultSession('s'))} controls={spyControls()} dispatch={dispatch} posRef={posRef} />)
-    fireEvent.change(screen.getByLabelText(/tempo/i), { target: { value: '140' } })
+    const input = screen.getByLabelText(/tempo/i)
+    fireEvent.focus(input)
+    // Clearing/retyping must NOT dispatch mid-edit (else '' → 0 → snapped to min).
+    fireEvent.change(input, { target: { value: '' } })
+    fireEvent.change(input, { target: { value: '140' } })
+    expect(dispatch).not.toHaveBeenCalled()
+    fireEvent.blur(input)
     expect(dispatch).toHaveBeenCalledWith({ type: 'SET_TEMPO', tempo: 140 })
+  })
+
+  it('disables the Record button while recording (no double-record)', () => {
+    const controls = spyControls()
+    const posRef = { current: 0 }
+    const recording = { ...initialState(defaultSession('s')), playing: true, recording: true }
+    render(<TransportBar state={recording} controls={controls} dispatch={vi.fn()} posRef={posRef} />)
+    const rec = screen.getByRole('button', { name: 'Record' })
+    expect(rec).toBeDisabled()
+    fireEvent.click(rec)
+    expect(controls.record).not.toHaveBeenCalled()
   })
 
   it('toggles snap-to-bar', () => {

@@ -44,10 +44,17 @@ function base64UrlDecode(input: string): Uint8Array {
 /**
  * Encode a session into a URL-fragment-safe token: base64url of the sanitized
  * session JSON. Audio remains referenced by id only.
+ *
+ * Returns null when the encoded payload would exceed MAX_SHARE_LINK_BYTES — the
+ * SAME cap `decodeSessionLink` enforces. Encoding a larger link would produce a
+ * token that always decodes to null, so callers must surface an error instead
+ * of shipping a dead link (H8).
  */
-export function encodeSessionLink(session: Session): string {
+export function encodeSessionLink(session: Session): string | null {
   const json = JSON.stringify(sanitizeSession(session))
-  return base64UrlEncode(new TextEncoder().encode(json))
+  const bytes = new TextEncoder().encode(json)
+  if (bytes.length > MAX_SHARE_LINK_BYTES) return null
+  return base64UrlEncode(bytes)
 }
 
 /**
@@ -59,6 +66,13 @@ export function decodeSessionLink(fragment: string): Session | null {
   if (typeof fragment !== 'string') return null
   const frag = fragment.startsWith('#') ? fragment.slice(1) : fragment
   if (frag === '') return null
+
+  // L8: reject a hostile oversized fragment from its LENGTH alone, before atob
+  // allocates the decoded byte array. A base64url string of N chars decodes to
+  // at least floor(N/4)*3 bytes (a conservative lower bound), so if that bound
+  // already exceeds the cap the fragment cannot be in-limit — drop it cheaply
+  // without decoding a multi-MB payload.
+  if (Math.floor(frag.length / 4) * 3 > MAX_SHARE_LINK_BYTES) return null
 
   let bytes: Uint8Array
   try {

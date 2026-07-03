@@ -60,11 +60,34 @@ export function openDb(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(SESSIONS_STORE)) db.createObjectStore(SESSIONS_STORE, { keyPath: 'id' })
       if (!db.objectStoreNames.contains(AUDIO_STORE)) db.createObjectStore(AUDIO_STORE, { keyPath: 'id' })
     }
-    req.onsuccess = () => resolve(req.result)
-    req.onerror = () => reject(req.error ?? new Error('Failed to open IndexedDB.'))
+    // The promise is settled at most once; a `blocked` rejection can still be
+    // followed by a late `success` when the blocker tab closes. Track that so the
+    // late connection is closed rather than leaked open (and unable to be upgraded).
+    let settled = false
+    req.onsuccess = () => {
+      const db = req.result
+      if (settled) {
+        db.close()
+        return
+      }
+      settled = true
+      // Never let this connection wedge a future upgrade: yield by closing when
+      // another tab requests a version change.
+      db.onversionchange = () => db.close()
+      resolve(db)
+    }
+    req.onerror = () => {
+      if (settled) return
+      settled = true
+      reject(req.error ?? new Error('Failed to open IndexedDB.'))
+    }
     // Fires when an open connection with an older version blocks the upgrade, or
     // when private-mode policy refuses the durable store.
-    req.onblocked = () => reject(new Error('IndexedDB is blocked — close other mtape tabs, or storage may be disabled (private mode).'))
+    req.onblocked = () => {
+      if (settled) return
+      settled = true
+      reject(new Error('IndexedDB is blocked — close other mtape tabs, or storage may be disabled (private mode).'))
+    }
   })
 }
 
@@ -97,15 +120,37 @@ export async function withTransaction<T>(
         reject(err instanceof Error ? err : new Error(String(err)))
         return
       }
+      // JOIN two conditions before resolving: the transaction must COMMIT
+      // (`oncomplete`, so a late write error still rejects) AND `fn` must have
+      // produced its value. Resolving on `oncomplete` alone races: if `fn` awaits
+      // non-IDB work, the tx auto-commits while `fn` is still pending and we would
+      // otherwise resolve `undefined as T`.
+      let settled = false
+      let committed = false
+      let fnDone = false
       let result: T
-      // Resolve on commit (not on the last request's success) so a late write
-      // error still surfaces as a rejection.
-      tx.oncomplete = () => resolve(result)
-      tx.onerror = () => reject(tx.error ?? new Error('IndexedDB transaction failed.'))
-      tx.onabort = () => reject(tx.error ?? new Error('IndexedDB transaction aborted.'))
+      const maybeResolve = () => {
+        if (committed && fnDone && !settled) {
+          settled = true
+          resolve(result)
+        }
+      }
+      const fail = (err: unknown) => {
+        if (settled) return
+        settled = true
+        reject(err instanceof Error ? err : new Error(String(err)))
+      }
+      tx.oncomplete = () => {
+        committed = true
+        maybeResolve()
+      }
+      tx.onerror = () => fail(tx.error ?? new Error('IndexedDB transaction failed.'))
+      tx.onabort = () => fail(tx.error ?? new Error('IndexedDB transaction aborted.'))
       Promise.resolve(fn(tx))
         .then((r) => {
           result = r
+          fnDone = true
+          maybeResolve()
         })
         .catch((err) => {
           try {
@@ -113,7 +158,7 @@ export async function withTransaction<T>(
           } catch {
             // Transaction may already be finished; the rejection below is enough.
           }
-          reject(err instanceof Error ? err : new Error(String(err)))
+          fail(err)
         })
     })
   } finally {
@@ -135,25 +180,74 @@ export function withStore<T>(
 // Session CRUD
 // --------------------------------------------------------------------------
 
-export async function putSession(session: Session): Promise<void> {
+// Optimistic concurrency: the last `updatedAt` THIS module committed (or read)
+// per session id. `putSession` stamps a fresh `updatedAt` on every write and
+// records it here; the next write refuses to overwrite a row whose stored
+// `updatedAt` has advanced beyond what we last saw (another tab wrote in
+// between). The timestamp is managed entirely here so `contracts.ts`/`Session`
+// need not change. A missing/non-finite stored timestamp is treated as "safe to
+// write". This is a concurrent-tab safeguard; assigning fresh ids on import is
+// the primary defence against clobbering the newer stored session.
+const lastSeenUpdatedAt = new Map<string, number>()
+
+/**
+ * Persist a session with an optimistic compare-and-swap guard. Returns `true`
+ * if the write was committed, `false` if it was skipped because a newer version
+ * of the same session already exists in the store (another tab wrote it).
+ */
+export async function putSession(session: Session): Promise<boolean> {
   const db = await openDb()
-  await withStore(db, SESSIONS_STORE, 'readwrite', (store) => requestAsync(store.put(session)))
+  return withStore(db, SESSIONS_STORE, 'readwrite', async (store) => {
+    const existing = (await requestAsync<unknown>(store.get(session.id))) as Partial<Session> | undefined
+    const storedAt = typeof existing?.updatedAt === 'number' && Number.isFinite(existing.updatedAt) ? existing.updatedAt : undefined
+    const lastSeen = lastSeenUpdatedAt.get(session.id)
+    // Refuse the overwrite only when we can prove the stored row is newer than
+    // the state we based this write on. Missing stored timestamp, or no prior
+    // knowledge of this id, both mean "safe to write".
+    if (storedAt !== undefined && lastSeen !== undefined && storedAt > lastSeen) {
+      return false
+    }
+    // Stamp a fresh, monotonic timestamp so a subsequent same-tab write matches
+    // and a concurrent tab's stale write is detected.
+    const stamped = Math.max(Date.now(), (storedAt ?? 0) + 1, (lastSeen ?? 0) + 1)
+    await requestAsync(store.put({ ...session, updatedAt: stamped }))
+    lastSeenUpdatedAt.set(session.id, stamped)
+    return true
+  })
 }
 
 export async function getSession(id: string): Promise<Session | null> {
   const db = await openDb()
   const raw = await withStore(db, SESSIONS_STORE, 'readonly', (store) => requestAsync<unknown>(store.get(id)))
   // Read path is a trust boundary: coerce whatever was stored into a valid model.
-  return raw == null ? null : sanitizeSession(raw)
+  if (raw == null) return null
+  const session = sanitizeSession(raw)
+  // Seed the CAS baseline: a subsequent putSession from this tab should not be
+  // treated as a conflict, and a concurrent tab that advances the row while we
+  // edit will be detected on our next write.
+  if (session.updatedAt > 0) lastSeenUpdatedAt.set(id, session.updatedAt)
+  return session
 }
 
 export async function getAllSessionMeta(): Promise<SessionMeta[]> {
   const db = await openDb()
-  const rows = await withStore(db, SESSIONS_STORE, 'readonly', (store) => requestAsync<unknown[]>(store.getAll()))
-  return rows.map((raw) => {
+  // Fetch values and keys together so a corrupt row's meta id can fall back to
+  // its actual store key (keyPath = `id`) instead of the sanitizer's `'session'`
+  // placeholder, which would mismatch the key and be unopenable/undeletable.
+  const rows = await withStore(db, SESSIONS_STORE, 'readonly', async (store) => {
+    const [values, keys] = await Promise.all([
+      requestAsync<unknown[]>(store.getAll()),
+      requestAsync<IDBValidKey[]>(store.getAllKeys()),
+    ])
+    return values.map((raw, i) => ({ raw, key: keys[i] }))
+  })
+  return rows.map(({ raw, key }) => {
     const s = sanitizeSession(raw)
+    // The store key is the source of truth for identity; only fall back to the
+    // sanitized id if the key is somehow non-string.
+    const id = typeof key === 'string' ? key : s.id
     return {
-      id: s.id,
+      id,
       name: s.name,
       updatedAt: s.updatedAt,
       trackCount: s.tracks.length,

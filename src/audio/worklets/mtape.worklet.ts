@@ -155,10 +155,18 @@ class MtapeProcessor extends AudioWorkletProcessor {
       case 'transport':
         this.onTransport(cmd.action)
         break
-      case 'seek':
+      case 'seek': {
+        // Ignore seeks mid-take: capture stays linear from recStartFrame, so
+        // moving the playhead would desync the take from the timeline. (M2)
+        if (this.recording) break
         this.posFrame = Math.round(cmd.positionSec * sampleRate)
-        this.lastBeat = -1 // avoid a spurious click at the new position
+        // Latch lastBeat to the beat the new position sits in, so the very next
+        // quantum's beatIndex matches and no off-grid click fires. Setting it to
+        // -1 would GUARANTEE the spurious click it was meant to avoid. (M15)
+        const framesPerBeat = secondsPerBeat(this.tempo, METRO_TS) * sampleRate
+        this.lastBeat = framesPerBeat > 0 ? Math.floor(this.posFrame / framesPerBeat) : -1
         break
+      }
       case 'setTempo':
         this.tempo = cmd.tempo
         break
@@ -205,6 +213,9 @@ class MtapeProcessor extends AudioWorkletProcessor {
         this.port.postMessage({ type: 'ended' } satisfies EngineEvent)
         break
       case 'record': {
+        // A second record while a take is in progress is ignored so the active
+        // take keeps running rather than being silently reset and discarded. (H5)
+        if (this.recording) break
         // Latch the single armed track now; arrangement edits mid-take won't move it.
         this.recTrackId = this.liveTracks.find((lt) => lt.arr.armed)?.arr.trackId ?? ''
         this.recording = true
@@ -380,8 +391,14 @@ class MtapeProcessor extends AudioWorkletProcessor {
       }
       l = this.limL.process(l)
       r = this.limR.process(r)
-      outL[f] = l
-      if (outR !== outL) outR[f] = r
+      if (outR !== outL) {
+        outL[f] = l
+        outR[f] = r
+      } else {
+        // Single-channel output: average both legs so a mono device matches the
+        // offline (L+R)/2 downmix instead of dropping the right leg. (L3)
+        outL[f] = 0.5 * (l + r)
+      }
       const al = l < 0 ? -l : l
       const ar = r < 0 ? -r : r
       if (al > peakL) peakL = al
@@ -396,7 +413,10 @@ class MtapeProcessor extends AudioWorkletProcessor {
 
   private advance(len: number): void {
     this.posFrame += len
-    if (this.loop.enabled && this.loop.endSec > this.loop.startSec) {
+    // Loop-wrapping mid-take would place post-wrap audio at a timeline position
+    // that doesn't match what the performer heard, so honour the loop only when
+    // not recording. (M2)
+    if (!this.recording && this.loop.enabled && this.loop.endSec > this.loop.startSec) {
       const endFrame = this.loop.endSec * sampleRate
       if (this.posFrame >= endFrame) {
         const startFrame = this.loop.startSec * sampleRate
@@ -437,7 +457,11 @@ class MtapeProcessor extends AudioWorkletProcessor {
   private captureInput(input: Float32Array[] | undefined, len: number): void {
     if (this.recTrackId === '') return // nothing armed => nothing to capture
     if (!this.recStarted) {
-      this.recChannelCount = input && input.length > 0 ? input.length : 1
+      // Defer the channel-count latch (and the take's start frame) until the
+      // input graph actually delivers a quantum: latching on an empty first
+      // quantum would force an entire stereo take to mono. (L5)
+      if (!input || input.length === 0) return
+      this.recChannelCount = input.length
       this.recStartFrame = Math.round(this.posFrame)
       this.recTotalFrames = 0
       this.allocChunk(this.recStartFrame)

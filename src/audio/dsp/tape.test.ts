@@ -23,10 +23,20 @@ describe('softSaturate', () => {
     }
   })
 
-  it('stays bounded (|out| < 1.05) for x in [-10, 10] at every engaged amount', () => {
+  it('never exceeds full scale on nominal input (|x| <= 1) at every engaged amount', () => {
+    // The tanh(drive*x)/tanh(drive) curve pins the rails, so a full-scale input
+    // maps to at most full-scale output — peaks are held, not overshot.
+    for (const amount of [0.05, 0.25, 0.5, 0.75, 1]) {
+      for (const x of sweep(-1, 1, 200)) {
+        expect(Math.abs(softSaturate(x, amount))).toBeLessThanOrEqual(1 + 1e-9)
+      }
+    }
+  })
+
+  it('stays finite for large |x| at every engaged amount', () => {
     for (const amount of [0.05, 0.25, 0.5, 0.75, 1]) {
       for (const x of sweep(-10, 10, 200)) {
-        expect(Math.abs(softSaturate(x, amount))).toBeLessThan(1.05)
+        expect(Number.isFinite(softSaturate(x, amount))).toBe(true)
       }
     }
   })
@@ -62,11 +72,35 @@ describe('softSaturate', () => {
     }
   })
 
-  it('has unity gain at low level (slope ~1 at origin) for every amount', () => {
+  it('boosts low level (origin slope >= 1, rising with amount) — the tape "fullness"', () => {
     const dx = 1e-4
-    for (const amount of [0, 0.3, 0.7, 1]) {
-      const slope = (softSaturate(dx, amount) - softSaturate(-dx, amount)) / (2 * dx)
-      expect(slope).toBeCloseTo(1, 3)
+    const slopeAt = (amount: number) =>
+      (softSaturate(dx, amount) - softSaturate(-dx, amount)) / (2 * dx)
+    // amount 0 is exact bypass: unity slope.
+    expect(slopeAt(0)).toBeCloseTo(1, 3)
+    // Engaged amounts lift quiet signals (slope > 1), monotonically with amount.
+    let prev = slopeAt(0)
+    for (const amount of [0.3, 0.7, 1]) {
+      const slope = slopeAt(amount)
+      expect(slope).toBeGreaterThan(1)
+      expect(slope).toBeGreaterThan(prev)
+      prev = slope
+    }
+  })
+
+  it('approaches identity as amount -> 0+ (continuous with the amount-0 bypass) [L2]', () => {
+    // The old curve jumped (e.g. x=1 snapping 1.0 -> 0.762) the instant the knob
+    // left 0; the normalized curve tends to identity as drive -> 0.
+    for (const x of sweep(-1, 1, 40)) {
+      expect(softSaturate(x, 1e-4)).toBeCloseTo(x, 3)
+    }
+  })
+
+  it('preserves full-scale peaks (f(±1) = ±1) at every engaged amount [L2]', () => {
+    // Peaks must not dip when saturation engages (old curve dropped 0.5 -> 0.197).
+    for (const amount of [0.05, 0.25, 0.5, 0.75, 1]) {
+      expect(softSaturate(1, amount)).toBeCloseTo(1, 6)
+      expect(softSaturate(-1, amount)).toBeCloseTo(-1, 6)
     }
   })
 
