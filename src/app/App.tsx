@@ -6,12 +6,13 @@
 import { useEffect, useReducer, useRef, type ReactNode } from 'react'
 import { initialState, reducer } from './state'
 import { useEngine } from './useEngine'
-import { defaultSession, TRACK_COUNT_MAX, TRACK_COUNT_MIN } from '../audio/contracts'
+import { defaultSession, DRIVE_MAX, DRIVE_MIN, GAIN_DB_MAX, GAIN_DB_MIN, TRACK_COUNT_MAX, TRACK_COUNT_MIN } from '../audio/contracts'
 import { TransportBar } from '../components/TransportBar'
 import { MasterSection } from '../components/MasterSection'
 import { TrackStrip } from '../components/TrackStrip'
 import { Timeline } from '../components/Timeline'
 import { SessionBar } from '../components/SessionBar'
+import { formatDb, formatPct } from '../components/uiHelpers'
 
 function newId(): string {
   return typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `id-${Date.now()}-${Math.random().toString(36).slice(2)}`
@@ -65,6 +66,32 @@ export function App(): ReactNode {
         <div className="app__brand">
           <span className="nameplate app__wordmark">MTAPE</span>
           <span className="readout app__version">v{__APP_VERSION__}</span>
+        </div>
+        <div className="app__master" aria-label="Master output">
+          <label className="app__master-ctl">
+            <span className="label">Vol</span>
+            <input
+              type="range"
+              min={GAIN_DB_MIN}
+              max={GAIN_DB_MAX}
+              step={0.1}
+              value={state.session.master.gainDb}
+              onChange={(e) => dispatch({ type: 'SET_MASTER', patch: { gainDb: Number(e.currentTarget.value) } })}
+            />
+            <span className="readout app__master-val">{formatDb(state.session.master.gainDb)}</span>
+          </label>
+          <label className="app__master-ctl">
+            <span className="label">Gain</span>
+            <input
+              type="range"
+              min={DRIVE_MIN}
+              max={DRIVE_MAX}
+              step={0.01}
+              value={state.session.master.drive}
+              onChange={(e) => dispatch({ type: 'SET_MASTER', patch: { drive: Number(e.currentTarget.value) } })}
+            />
+            <span className="readout app__master-val">{formatPct(state.session.master.drive)}</span>
+          </label>
         </div>
         <p className="app__hook">Press record on your browser. Arrange what you played. Bounce a song.</p>
       </header>
