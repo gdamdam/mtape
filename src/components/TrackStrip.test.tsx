@@ -20,7 +20,7 @@ describe('TrackStrip', () => {
   it('disarms a lit arm toggle (M10)', () => {
     const dispatch = vi.fn()
     const t = track({ armed: true })
-    render(<TrackStrip track={t} index={0} selected={false} canRemove controls={stubControls()} dispatch={dispatch} meterRef={meterRef} />)
+    render(<TrackStrip track={t} index={0} selected={false} canRemove controls={stubControls()} dispatch={dispatch} meterRef={meterRef} mbusSources={[]} mbusSourceId="" />)
     fireEvent.click(screen.getByTitle('Record-arm'))
     expect(dispatch).toHaveBeenCalledWith({ type: 'SET_TRACK_PARAM', trackId: t.id, patch: { armed: false } })
   })
@@ -28,7 +28,7 @@ describe('TrackStrip', () => {
   it('arms an unlit arm toggle', () => {
     const dispatch = vi.fn()
     const t = track({ armed: false })
-    render(<TrackStrip track={t} index={0} selected={false} canRemove controls={stubControls()} dispatch={dispatch} meterRef={meterRef} />)
+    render(<TrackStrip track={t} index={0} selected={false} canRemove controls={stubControls()} dispatch={dispatch} meterRef={meterRef} mbusSources={[]} mbusSourceId="" />)
     fireEvent.click(screen.getByTitle('Record-arm'))
     expect(dispatch).toHaveBeenCalledWith({ type: 'SET_TRACK_PARAM', trackId: t.id, patch: { armed: true } })
   })
@@ -36,7 +36,7 @@ describe('TrackStrip', () => {
   it('commits the track name on blur, not per keystroke (M13)', () => {
     const dispatch = vi.fn()
     const t = track({ name: 'Track 1' })
-    render(<TrackStrip track={t} index={0} selected={false} canRemove controls={stubControls()} dispatch={dispatch} meterRef={meterRef} />)
+    render(<TrackStrip track={t} index={0} selected={false} canRemove controls={stubControls()} dispatch={dispatch} meterRef={meterRef} mbusSources={[]} mbusSourceId="" />)
     const input = screen.getByLabelText('Track name')
     fireEvent.focus(input)
     fireEvent.change(input, { target: { value: '' } }) // cleared mid-edit — must not snap back

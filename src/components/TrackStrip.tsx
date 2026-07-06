@@ -31,6 +31,10 @@ interface TrackStripProps {
   controls: UiControls
   dispatch: Dispatch<Action>
   meterRef: RefObject<MeterSnapshot | null>
+  /** Advertised mbus sources (empty when the bridge is absent). */
+  mbusSources: ReadonlyArray<{ sourceId: string; name: string; clientId: string }>
+  /** This track's subscribed mbus sourceId ('' = none picked yet). */
+  mbusSourceId: string
 }
 
 const INPUT_OPTIONS: ReadonlyArray<{ value: TrackInputKind; label: string }> = [
@@ -38,9 +42,10 @@ const INPUT_OPTIONS: ReadonlyArray<{ value: TrackInputKind; label: string }> = [
   { value: 'tab', label: 'Tab' },
   { value: 'mic', label: 'Mic' },
   { value: 'file', label: 'File…' },
+  { value: 'mbus', label: 'mbus' },
 ]
 
-export function TrackStrip({ track, index, selected, canRemove, controls, dispatch, meterRef }: TrackStripProps): ReactNode {
+export function TrackStrip({ track, index, selected, canRemove, controls, dispatch, meterRef, mbusSources, mbusSourceId }: TrackStripProps): ReactNode {
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const patch = (p: Partial<Track>): void => dispatch({ type: 'SET_TRACK_PARAM', trackId: track.id, patch: p })
 
@@ -111,6 +116,22 @@ export function TrackStrip({ track, index, selected, canRemove, controls, dispat
               </option>
             ))}
           </select>
+          {track.input === 'mbus' && (
+            <select
+              className="readout"
+              aria-label="mbus source"
+              title="Record a sibling instrument published to the mbus patchbay (needs the local link-bridge)"
+              value={mbusSourceId}
+              onChange={(e) => controls.chooseMbusSource(track.id, e.currentTarget.value)}
+            >
+              <option value="">{mbusSources.length === 0 ? 'no sources…' : 'pick source'}</option>
+              {mbusSources.map((src) => (
+                <option key={src.sourceId} value={src.sourceId}>
+                  {src.name} · {src.sourceId}
+                </option>
+              ))}
+            </select>
+          )}
         </label>
         <input
           ref={fileInputRef}

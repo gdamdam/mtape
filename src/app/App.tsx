@@ -32,7 +32,7 @@ export function App(): ReactNode {
   const stateRef = useRef(state)
   stateRef.current = state
 
-  const { controls, posRef, meterRef } = useEngine(dispatch, stateRef)
+  const { controls, posRef, meterRef, mbusSources, mbusChoices } = useEngine(dispatch, stateRef)
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
@@ -113,7 +113,7 @@ export function App(): ReactNode {
         <div className="mixer" aria-label="Mixer">
           <div className="mixer__strips">
             {state.session.tracks.map((track, i) => (
-              <TrackStrip key={track.id} track={track} index={i} selected={state.selectedTrackId === track.id} canRemove={canRemove} controls={controls} dispatch={dispatch} meterRef={meterRef} />
+              <TrackStrip key={track.id} track={track} index={i} selected={state.selectedTrackId === track.id} canRemove={canRemove} controls={controls} dispatch={dispatch} meterRef={meterRef} mbusSources={mbusSources} mbusSourceId={mbusChoices[track.id] ?? ''} />
             ))}
           </div>
           <button type="button" className="mixer__add" disabled={!canAdd} onClick={() => dispatch({ type: 'ADD_TRACK', id: newId() })}>

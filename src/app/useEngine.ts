@@ -9,7 +9,7 @@
 // is imported lazily (dynamic import) so a missing AudioEngine.ts during the
 // parallel build can't break the reducer/UI test suites.
 
-import { useCallback, useEffect, useMemo, useRef, type Dispatch, type RefObject } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type RefObject } from 'react'
 import type { Action, AppState } from './state'
 import type { DecodedAudio, EngineControls } from '../audio/engineApi'
 import type { EngineEvent, TrackArrangement } from '../audio/messages'
@@ -21,7 +21,7 @@ import { saveLastSessionId } from '../persistence/lastSession'
 import { exportSession, parseImport, serializeExport } from '../persistence/exportImport'
 import { decodeSessionLink, encodeSessionLink } from '../sharing/sessionLink'
 import { defaultSession, type Clip, type Session, type Track, type TrackInputKind } from '../audio/contracts'
-import { createMbusClient, type MbusClient, type Publication } from '../transport/mbus'
+import { createMbusClient, type MbusClient, type Publication, type SourceInfo, type Subscription } from '../transport/mbus'
 
 /** Latest meter frame, mirrored from the engine's `meters` event. */
 export interface MeterSnapshot {
@@ -55,6 +55,9 @@ export interface UiControls {
   /** Offer (or withdraw) the master mix as an mbus source named 'mtape'.
    *  Off by default and session-transient; harmless without the bridge. */
   setMbusPublish(on: boolean): void
+  /** Subscribe a track's mbus input to a published sibling source ('' = none).
+   *  The track's input kind must be 'mbus' (chooseInput). */
+  chooseMbusSource(trackId: string, sourceId: string): void
 }
 
 export interface UseEngineOptions {
@@ -66,6 +69,10 @@ export interface UseEngineResult {
   controls: UiControls
   posRef: RefObject<number>
   meterRef: RefObject<MeterSnapshot | null>
+  /** Advertised mbus sources (live directory; empty without the bridge). */
+  mbusSources: SourceInfo[]
+  /** Per-track subscribed mbus sourceId (session-transient). */
+  mbusChoices: Record<string, string>
 }
 
 // --- pure-ish helpers ------------------------------------------------------
@@ -145,6 +152,15 @@ export function useEngine(dispatch: Dispatch<Action>, stateRef: RefObject<AppSta
   const mbusPubRef = useRef<Publication | null>(null)
   const mbusTapRef = useRef<AudioNode | null>(null)
   const mbusWantedRef = useRef(false)
+  // mbus INPUT side: per-track subscriptions bridged into the engine's
+  // MediaStream input plumbing via a MediaStreamDestination. The client is
+  // shared with the publish side; discovery stays on once a track has used the
+  // mbus input (cheap idle localhost socket, mfx precedent).
+  const mbusInputsRef = useRef(new Map<string, { sub: Subscription; dest: MediaStreamAudioDestinationNode }>())
+  const mbusDiscoveryRef = useRef(false)
+  const mbusSourcesOffRef = useRef<(() => void) | null>(null)
+  const [mbusSources, setMbusSources] = useState<SourceInfo[]>([])
+  const [mbusChoices, setMbusChoices] = useState<Record<string, string>>({})
   // Signatures of the last declarative state pushed to the engine, so an
   // unrelated dispatch (e.g. a per-pointermove MOVE_CLIP drag frame) doesn't
   // re-post unchanged tempo/loop/master/arrangement to the worklet. (L12)
@@ -333,7 +349,41 @@ export function useEngine(dispatch: Dispatch<Action>, stateRef: RefObject<AppSta
       mbusPubRef.current = mbusClientRef.current.publishOutput(tap, 'mtape')
       mbusTapRef.current = tap
     }
-    if (!wanted) mbusClientRef.current?.disconnect()
+    // The client is shared with the mbus input side — only drop the socket
+    // when nothing needs it anymore.
+    if (!wanted && !mbusDiscoveryRef.current && mbusInputsRef.current.size === 0) {
+      mbusClientRef.current?.disconnect()
+    }
+  }, [])
+
+  /** Create/connect the shared client and start directory discovery. */
+  const ensureMbusClient = useCallback((): MbusClient => {
+    mbusClientRef.current ??= createMbusClient()
+    const client = mbusClientRef.current
+    if (!mbusSourcesOffRef.current) {
+      mbusSourcesOffRef.current = client.onSources((s) => setMbusSources([...s]))
+    }
+    mbusDiscoveryRef.current = true
+    client.connect()
+    return client
+  }, [])
+
+  /** Close a track's mbus subscription (idempotent). */
+  const closeMbusInput = useCallback((trackId: string) => {
+    const h = mbusInputsRef.current.get(trackId)
+    if (!h) return
+    mbusInputsRef.current.delete(trackId)
+    try {
+      h.sub.close()
+      h.dest.disconnect()
+    } catch {
+      /* graph may already be gone */
+    }
+    setMbusChoices((prev) => {
+      const next = { ...prev }
+      delete next[trackId]
+      return next
+    })
   }, [])
 
   const ensureEngine = useCallback(async (): Promise<EngineControls> => {
@@ -521,6 +571,15 @@ export function useEngine(dispatch: Dispatch<Action>, stateRef: RefObject<AppSta
       },
       async chooseInput(trackId: string, kind: TrackInputKind) {
         dispatch({ type: 'SET_TRACK_PARAM', trackId, patch: { input: kind } })
+        // Switching away from (or re-selecting) mbus drops the old subscription.
+        closeMbusInput(trackId)
+        if (kind === 'mbus') {
+          // Turn discovery on so the strip's source picker fills; subscribing
+          // happens when the user picks a source (chooseMbusSource).
+          ensureMbusClient()
+          engineRef.current?.detachInput(trackId)
+          return
+        }
         const e = engineRef.current
         if (!e) return
         if (kind === 'none') {
@@ -642,9 +701,34 @@ export function useEngine(dispatch: Dispatch<Action>, stateRef: RefObject<AppSta
         mbusWantedRef.current = on
         applyMbusPublish()
       },
+      chooseMbusSource(trackId: string, sourceId: string) {
+        closeMbusInput(trackId)
+        const e = engineRef.current
+        if (!e || sourceId === '') return
+        // The engine's own context (via its master tap): a live subscription
+        // needs a running AudioContext to carry samples into the stream.
+        const tap = e.getMasterTap()
+        const ctx = tap ? (tap.context as AudioContext) : null
+        if (!ctx) {
+          dispatch({ type: 'SET_STATUS', status: 'Start audio before picking an mbus source.' })
+          return
+        }
+        try {
+          const sub = ensureMbusClient().subscribe(sourceId, ctx)
+          const dest = ctx.createMediaStreamDestination()
+          sub.node.connect(dest)
+          e.attachInput(trackId, dest.stream)
+          mbusInputsRef.current.set(trackId, { sub, dest })
+          setMbusChoices((prev) => ({ ...prev, [trackId]: sourceId }))
+        } catch {
+          // One subscription per source per client — a second track wanting the
+          // same source is the realistic thrower here.
+          dispatch({ type: 'SET_STATUS', status: 'That source is already feeding another track.' })
+        }
+      },
     }
     // stateRef/posRef/etc are stable refs; dispatch/ensureEngine/gatherSources/persist/loadIntoEngine are memoized.
-  }, [dispatch, ensureEngine, gatherSources, persist, stateRef, loadIntoEngine, applyMbusPublish])
+  }, [dispatch, ensureEngine, gatherSources, persist, stateRef, loadIntoEngine, applyMbusPublish, ensureMbusClient, closeMbusInput])
 
-  return { controls, posRef, meterRef }
+  return { controls, posRef, meterRef, mbusSources, mbusChoices }
 }

@@ -36,6 +36,7 @@ result to a WAV — all offline, with no account and nothing uploaded. It is a m
 - **A real mixer** — per track: volume, pan, mute/solo, record-arm, input monitor (off by
   default to prevent feedback), and a 3-band EQ. Master bus: gain → optional soft-clip drive →
   brick-wall limiter with a clip LED and peak/RMS metering.
+- **Optional mbus input** — set a track's input to **mbus** and pick a sibling instrument from the source list to record its published output directly (tab-to-tab WebRTC via the local link-bridge): no screen-share picker, the exact master feed, works beyond Chromium's tab capture. Off by default; empty and harmless without the bridge.
 - **Optional mbus publish** — the "Bus" button in the Master section offers the master mix to the [mbus](https://mbus.mpump.live) patchbay as a source named `mtape` (tab-to-tab WebRTC via the local **mpump** link-bridge, peer-to-peer, no server). Off by default; harmless without the bridge. The vendored mbus-client lives in `src/transport/mbus/` (provenance in its index.ts header).
 - **Mixdown & stems** — offline render of the whole song or just the loop region to 16- or
   24-bit WAV, plus per-track stem export. The offline renderer shares its scheduling and DSP
