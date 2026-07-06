@@ -61,6 +61,10 @@ export class AudioEngine implements EngineControls {
     return this.latencySecValue
   }
 
+  getMasterTap(): AudioNode | null {
+    return this.node
+  }
+
   async start(): Promise<void> {
     if (this.disposed) throw new Error('AudioEngine disposed')
     if (this.isRunning()) return

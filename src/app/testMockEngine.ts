@@ -91,6 +91,9 @@ export function createMockEngine(opts: MockEngineOptions = {}): MockEngine {
     emit(event: EngineEvent) {
       for (const l of listeners) l(event)
     },
+    getMasterTap() {
+      return null
+    },
     dispose() {
       running = false
       listeners.clear()

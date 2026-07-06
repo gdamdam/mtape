@@ -21,6 +21,7 @@ import { saveLastSessionId } from '../persistence/lastSession'
 import { exportSession, parseImport, serializeExport } from '../persistence/exportImport'
 import { decodeSessionLink, encodeSessionLink } from '../sharing/sessionLink'
 import { defaultSession, type Clip, type Session, type Track, type TrackInputKind } from '../audio/contracts'
+import { createMbusClient, type MbusClient, type Publication } from '../transport/mbus'
 
 /** Latest meter frame, mirrored from the engine's `meters` event. */
 export interface MeterSnapshot {
@@ -51,6 +52,9 @@ export interface UiControls {
   exportJson(): void
   importJson(file: File): Promise<void>
   copyShareLink(): Promise<void>
+  /** Offer (or withdraw) the master mix as an mbus source named 'mtape'.
+   *  Off by default and session-transient; harmless without the bridge. */
+  setMbusPublish(on: boolean): void
 }
 
 export interface UseEngineOptions {
@@ -133,6 +137,14 @@ export function useEngine(dispatch: Dispatch<Action>, stateRef: RefObject<AppSta
   // In-flight engine-creation promise, so two rapid start() calls share one
   // engine instead of racing to build two (the first would leak). (M12)
   const enginePromiseRef = useRef<Promise<EngineControls> | null>(null)
+  // mbus publish (see src/transport/mbus): intent + client/publication, kept in
+  // refs like the engine itself. Off by default; until enabled no client exists
+  // and no socket is opened. applyMbusPublish reconciles intent with the live
+  // engine so toggle-before-start and engine restarts both resolve correctly.
+  const mbusClientRef = useRef<MbusClient | null>(null)
+  const mbusPubRef = useRef<Publication | null>(null)
+  const mbusTapRef = useRef<AudioNode | null>(null)
+  const mbusWantedRef = useRef(false)
   // Signatures of the last declarative state pushed to the engine, so an
   // unrelated dispatch (e.g. a per-pointermove MOVE_CLIP drag frame) doesn't
   // re-post unchanged tempo/loop/master/arrangement to the worklet. (L12)
@@ -304,6 +316,26 @@ export function useEngine(dispatch: Dispatch<Action>, stateRef: RefObject<AppSta
     [dispatch, finalizeRecording],
   )
 
+  // Reconcile the mbus publish intent with the live engine: enable is deferred
+  // until the engine exists (start() re-applies); disable unannounces the
+  // source and drops the bridge socket so "off" leaves nothing running.
+  const applyMbusPublish = useCallback(() => {
+    const tap = engineRef.current?.getMasterTap() ?? null
+    const wanted = mbusWantedRef.current
+    if (mbusPubRef.current && (mbusTapRef.current !== tap || !wanted)) {
+      mbusPubRef.current.stop()
+      mbusPubRef.current = null
+      mbusTapRef.current = null
+    }
+    if (wanted && tap && !mbusPubRef.current) {
+      mbusClientRef.current ??= createMbusClient()
+      mbusClientRef.current.connect()
+      mbusPubRef.current = mbusClientRef.current.publishOutput(tap, 'mtape')
+      mbusTapRef.current = tap
+    }
+    if (!wanted) mbusClientRef.current?.disconnect()
+  }, [])
+
   const ensureEngine = useCallback(async (): Promise<EngineControls> => {
     if (engineRef.current) return engineRef.current
     // Reuse an in-flight build so concurrent start() calls don't each await the
@@ -462,6 +494,8 @@ export function useEngine(dispatch: Dispatch<Action>, stateRef: RefObject<AppSta
         try {
           await e.start()
           dispatch({ type: 'SET_AUDIO_READY', ready: true })
+          // A publish enabled before start now has its tap.
+          applyMbusPublish()
         } catch {
           dispatch({ type: 'SET_STATUS', status: 'Could not start audio. Please try again.' })
         }
@@ -604,9 +638,13 @@ export function useEngine(dispatch: Dispatch<Action>, stateRef: RefObject<AppSta
           dispatch({ type: 'SET_STATUS', status: 'Share link is in the address bar (clipboard was blocked).' })
         }
       },
+      setMbusPublish(on: boolean) {
+        mbusWantedRef.current = on
+        applyMbusPublish()
+      },
     }
     // stateRef/posRef/etc are stable refs; dispatch/ensureEngine/gatherSources/persist/loadIntoEngine are memoized.
-  }, [dispatch, ensureEngine, gatherSources, persist, stateRef, loadIntoEngine])
+  }, [dispatch, ensureEngine, gatherSources, persist, stateRef, loadIntoEngine, applyMbusPublish])
 
   return { controls, posRef, meterRef }
 }

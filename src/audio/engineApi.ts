@@ -65,5 +65,9 @@ export interface EngineControls {
   // Events
   onEvent(listener: EngineEventListener): () => void
 
+  /** End-of-chain output node (the worklet mix) for publishing to the mbus
+   *  patchbay. null until running. */
+  getMasterTap(): AudioNode | null
+
   dispose(): void
 }

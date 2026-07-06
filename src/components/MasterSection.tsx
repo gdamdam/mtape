@@ -31,6 +31,8 @@ interface MasterSectionProps {
 export function MasterSection({ state, controls, dispatch, meterRef }: MasterSectionProps): ReactNode {
   const { master } = state.session
   const [bitDepth, setBitDepth] = useState<BitDepth>(16)
+  // mbus publish intent — session-transient, off by default.
+  const [busOn, setBusOn] = useState(false)
 
   // Stable getter identities so Meter's rAF loop isn't torn down on every
   // dispatch (each reducer render otherwise minted fresh closures).
@@ -70,6 +72,20 @@ export function MasterSection({ state, controls, dispatch, meterRef }: MasterSec
         </button>
         <button type="button" onClick={() => void controls.exportStems(bitDepth)}>
           Stems
+        </button>
+        <button
+          type="button"
+          aria-pressed={busOn}
+          title={busOn
+            ? 'Publishing the master mix to the mbus patchbay (via the local link-bridge)'
+            : 'Publish the master mix to the mbus patchbay (needs the local link-bridge; harmless without it)'}
+          onClick={() => {
+            const next = !busOn
+            setBusOn(next)
+            controls.setMbusPublish(next)
+          }}
+        >
+          {busOn ? 'Bus on' : 'Bus'}
         </button>
       </div>
     </section>
