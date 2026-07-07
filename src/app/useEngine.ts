@@ -364,7 +364,11 @@ export function useEngine(dispatch: Dispatch<Action>, stateRef: RefObject<AppSta
       // Our own publications are not pickable inputs (subscribing to yourself
       // is a feedback loop); a second mtape tab has a different clientId and
       // stays listed. The welcome (which sets the id) always precedes snapshots.
-      mbusSourcesOffRef.current = client.onSources((s) => setMbusSources(s.filter((x) => x.clientId !== client.getClientId())))
+      const visible = (s: readonly SourceInfo[]) => s.filter((x) => x.clientId !== client.getClientId())
+      mbusSourcesOffRef.current = client.onSources((s) => setMbusSources(visible(s)))
+      // onSources doesn't replay: if the publish toggle connected the client
+      // first, the current snapshot already arrived — seed from it.
+      setMbusSources(visible(client.getSources()))
     }
     mbusDiscoveryRef.current = true
     client.connect()

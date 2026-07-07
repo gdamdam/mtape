@@ -305,4 +305,34 @@ describe('useEngine bridge', () => {
     })
     expect(screen.getByTestId('sources').textContent).toBe('s1')
   })
+
+  it('seeds the picker from a directory snapshot that arrived before discovery started', async () => {
+    // The publish toggle can connect the shared client first; by the time the
+    // user picks the mbus input, the only snapshot may already have been
+    // delivered. onSources does not replay it, so the hook must seed from
+    // getSources() — filtered the same way.
+    mbus.client.getSources.mockReturnValueOnce([
+      { sourceId: 's1', name: 'mdrone', clientId: 'other-client' },
+      { sourceId: 's2', name: 'mtape', clientId: 'own-client' },
+    ])
+    const engine = createMockEngine()
+    function SeedHarness(): ReactNode {
+      const [state, dispatch] = useReducer(reducer, undefined, () => initialState(defaultSession('t')))
+      const stateRef = useRef(state)
+      stateRef.current = state
+      const { controls, mbusSources } = useEngine(dispatch, stateRef, { createEngine: () => engine })
+      const firstTrack = state.session.tracks[0].id
+      return (
+        <div>
+          <span data-testid="seeded">{mbusSources.map((s) => s.sourceId).join(',')}</span>
+          <button onClick={() => void controls.chooseInput(firstTrack, 'mbus')}>seed-mbus-in</button>
+        </div>
+      )
+    }
+    render(<SeedHarness />)
+    await act(async () => {
+      fireEvent.click(screen.getByText('seed-mbus-in'))
+    })
+    expect(screen.getByTestId('seeded').textContent).toBe('s1')
+  })
 })
