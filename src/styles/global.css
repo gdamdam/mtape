@@ -267,14 +267,12 @@ button:disabled {
   align-items: baseline;
   gap: 12px;
 }
-.app__logo {
-  align-self: center;
-  border-radius: 6px;
-}
 .app__wordmark {
-  font-size: var(--step-3);
-  color: var(--amber-bright);
-  text-shadow: 0 0 18px rgba(232, 163, 74, 0.25);
+  align-self: center;
+  display: block;
+  height: 40px;
+  width: auto;
+  border-radius: 8px;
 }
 .app__version {
   font-size: var(--step--1);

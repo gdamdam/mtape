@@ -1,18 +1,26 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="mtape">
-  <rect width="512" height="512" fill="#0c0a08"/>
-  <path d="M196 292 Q 256 328 316 292" fill="none" stroke="#5c4522" stroke-width="7"/>
-  <g fill="none" stroke="#e8a34a" stroke-width="11">
-    <circle cx="196" cy="240" r="58"/>
-    <circle cx="316" cy="240" r="58"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="mtape">
+  <defs>
+    <radialGradient id="mtp1-glow" cx="50%" cy="42%" r="60%">
+      <stop offset="0%" stop-color="#e8a34a" stop-opacity="0.30"/>
+      <stop offset="100%" stop-color="#e8a34a" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="512" height="512" rx="0" fill="#0c0a08"/>
+  <rect width="512" height="512" rx="0" fill="url(#mtp1-glow)"/>
+  <!-- tape path between reels -->
+  <path d="M176 300 Q 256 344 336 300" fill="none" stroke="#5c4522" stroke-width="8"/>
+  <g fill="none" stroke="#e8a34a" stroke-width="12">
+    <circle cx="176" cy="236" r="72"/>
+    <circle cx="336" cy="236" r="72"/>
   </g>
-  <g stroke="#e8a34a" stroke-width="11" stroke-linecap="round">
-    <line x1="196" y1="240" x2="196" y2="201"/>
-    <line x1="196" y1="240" x2="229" y2="259"/>
-    <line x1="196" y1="240" x2="163" y2="259"/>
-    <line x1="316" y1="240" x2="316" y2="201"/>
-    <line x1="316" y1="240" x2="349" y2="259"/>
-    <line x1="316" y1="240" x2="283" y2="259"/>
+  <g stroke="#e8a34a" stroke-width="12" stroke-linecap="round">
+    <line x1="176" y1="236" x2="176" y2="188"/>
+    <line x1="176" y1="236" x2="217" y2="260"/>
+    <line x1="176" y1="236" x2="135" y2="260"/>
+    <line x1="336" y1="236" x2="336" y2="188"/>
+    <line x1="336" y1="236" x2="377" y2="260"/>
+    <line x1="336" y1="236" x2="295" y2="260"/>
   </g>
-  <circle cx="196" cy="240" r="13" fill="#e8a34a"/>
-  <circle cx="316" cy="240" r="13" fill="#ff5a3c"/>
+  <circle cx="176" cy="236" r="16" fill="#e8a34a"/>
+  <circle cx="336" cy="236" r="16" fill="#ff5a3c"/>
 </svg>
