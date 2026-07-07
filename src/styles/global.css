@@ -267,6 +267,10 @@ button:disabled {
   align-items: baseline;
   gap: 12px;
 }
+.app__logo {
+  align-self: center;
+  border-radius: 6px;
+}
 .app__wordmark {
   font-size: var(--step-3);
   color: var(--amber-bright);

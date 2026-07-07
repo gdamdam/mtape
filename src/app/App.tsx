@@ -64,6 +64,7 @@ export function App(): ReactNode {
       <div style={{ display: 'contents' }} inert={!state.audioReady}>
       <header className="app__header panel">
         <div className="app__brand">
+          <img className="app__logo" src="/favicon.svg" alt="" width={28} height={28} />
           <span className="nameplate app__wordmark">MTAPE</span>
           <span className="readout app__version">v{__APP_VERSION__}</span>
         </div>

@@ -1,12 +1,18 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" width="192" height="192" role="img" aria-label="mtape">
-  <rect width="192" height="192" rx="34" fill="#0c0a08"/>
-  <g fill="none" stroke="#e8a34a" stroke-width="10">
-    <circle cx="96" cy="96" r="63"/>
-    <circle cx="96" cy="96" r="19"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="192" height="192" role="img" aria-label="mtape">
+  <rect width="512" height="512" rx="104" fill="#0c0a08"/>
+  <path d="M176 300 Q 256 344 336 300" fill="none" stroke="#5c4522" stroke-width="8"/>
+  <g fill="none" stroke="#e8a34a" stroke-width="12">
+    <circle cx="176" cy="236" r="72"/>
+    <circle cx="336" cy="236" r="72"/>
   </g>
-  <g fill="#e8a34a">
-    <circle cx="96" cy="46.5" r="9.5"/>
-    <circle cx="138.9" cy="120.7" r="9.5"/>
-    <circle cx="53.1" cy="120.7" r="9.5"/>
+  <g stroke="#e8a34a" stroke-width="12" stroke-linecap="round">
+    <line x1="176" y1="236" x2="176" y2="188"/>
+    <line x1="176" y1="236" x2="217" y2="260"/>
+    <line x1="176" y1="236" x2="135" y2="260"/>
+    <line x1="336" y1="236" x2="336" y2="188"/>
+    <line x1="336" y1="236" x2="377" y2="260"/>
+    <line x1="336" y1="236" x2="295" y2="260"/>
   </g>
+  <circle cx="176" cy="236" r="16" fill="#e8a34a"/>
+  <circle cx="336" cy="236" r="16" fill="#ff5a3c"/>
 </svg>
