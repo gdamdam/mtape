@@ -17,6 +17,8 @@
 
 *The multitrack tape recorder and arranger for the m-suite — the place where your loops become finished songs.*
 
+![mtape screenshot](./mtape_screenshot.gif)
+
 </div>
 
 ---
