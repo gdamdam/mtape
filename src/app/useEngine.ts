@@ -361,7 +361,10 @@ export function useEngine(dispatch: Dispatch<Action>, stateRef: RefObject<AppSta
     mbusClientRef.current ??= createMbusClient()
     const client = mbusClientRef.current
     if (!mbusSourcesOffRef.current) {
-      mbusSourcesOffRef.current = client.onSources((s) => setMbusSources([...s]))
+      // Our own publications are not pickable inputs (subscribing to yourself
+      // is a feedback loop); a second mtape tab has a different clientId and
+      // stays listed. The welcome (which sets the id) always precedes snapshots.
+      mbusSourcesOffRef.current = client.onSources((s) => setMbusSources(s.filter((x) => x.clientId !== client.getClientId())))
     }
     mbusDiscoveryRef.current = true
     client.connect()

@@ -3,13 +3,14 @@
  *
  * Graph:
  *   input source ─▶ mtape worklet (input 0)                (dry capture bus)
- *   input source ─▶ monitorGain(0) ─▶ destination          (per-track monitor, OFF)
+ *   input source ─▶ monitorGain ─▶ destination             (per-track MON, off by default)
  *   mtape worklet ─▶ destination                           (the mix)
  *
  * The UI pushes declarative state; the worklet does all DSP. Capture sources
  * (tab/mic) feed the worklet's single input for recording. Input monitoring is
- * OFF by default (feedback safety) — there is no toggle on this interface, so the
- * monitor gain node exists at 0 purely so the plumbing is disconnectable.
+ * OFF by default (feedback safety); the track's MON toggle opens the raw-input
+ * monitor leg via setArrangement (see monitor.ts) — it bypasses the worklet, so
+ * it is never part of the published/rendered mix.
  *
  * RECORD ENRICHMENT: the worklet emits `recordChunk`/`recordComplete` with an
  * empty `audioId` and RAW timing. This engine mints one `audioId` per take
@@ -18,6 +19,7 @@
  * enriched event out to listeners.
  */
 import { compensateRecordStart } from '../transport/timing'
+import { applyMonitorGains, monitoredTrackIds } from './monitor'
 import type { LoopRegion, MasterBus } from './contracts'
 import type { DecodedAudio, EngineControls, EngineEventListener } from './engineApi'
 import type { EngineCommand, EngineEvent, TrackArrangement } from './messages'
@@ -34,6 +36,8 @@ export class AudioEngine implements EngineControls {
   private ctx: AudioContext | null = null
   private node: AudioWorkletNode | null = null
   private inputs = new Map<string, InputHandle>()
+  /** Track ids with MON on, per the last arrangement push (see monitor.ts). */
+  private monitorOn = new Set<string>()
   private listeners = new Set<EngineEventListener>()
 
   private starting: Promise<void> | null = null
@@ -178,6 +182,10 @@ export class AudioEngine implements EngineControls {
 
   setArrangement(tracks: TrackArrangement[]): void {
     this.post({ type: 'setArrangement', tracks })
+    // Input monitoring lives on the main thread (see monitor.ts): remember the
+    // MON flags for inputs attached later, update the ones attached now.
+    this.monitorOn = monitoredTrackIds(tracks)
+    applyMonitorGains(this.inputs, this.monitorOn)
   }
 
   // ------------------------------------------------------------------ assets
@@ -225,9 +233,9 @@ export class AudioEngine implements EngineControls {
     this.detachInput(trackId) // idempotent: replace any prior attachment
     const source = ctx.createMediaStreamSource(stream)
     source.connect(this.node) // feed the worklet's record bus (input 0)
-    // Monitor path exists but stays silent (feedback safety; no toggle here).
+    // Monitor path, driven by the track's MON toggle (off = 0, feedback safety).
     const monitor = ctx.createGain()
-    monitor.gain.value = 0
+    monitor.gain.value = this.monitorOn.has(trackId) ? 1 : 0
     source.connect(monitor).connect(ctx.destination)
     this.inputs.set(trackId, { source, monitor, stream })
   }

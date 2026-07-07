@@ -22,6 +22,30 @@ vi.mock('../sharing/sessionLink', () => ({
   decodeSessionLink: vi.fn(() => null),
 }))
 
+// The mbus client is faked so tests can push directory snapshots and assert
+// what the hook exposes to the picker (no bridge, no WebSocket).
+const mbus = vi.hoisted(() => {
+  const sourcesCbs: Array<(s: Array<{ sourceId: string; name: string; clientId: string }>) => void> = []
+  const client = {
+    connect: vi.fn(),
+    disconnect: vi.fn(),
+    getState: vi.fn(() => 'connected'),
+    onState: vi.fn(() => () => {}),
+    getClientId: vi.fn(() => 'own-client'),
+    getSources: vi.fn(() => []),
+    onSources: vi.fn((cb: (s: Array<{ sourceId: string; name: string; clientId: string }>) => void) => {
+      sourcesCbs.push(cb)
+      return () => {}
+    }),
+    publishOutput: vi.fn(),
+    subscribe: vi.fn(),
+  }
+  return { client, sourcesCbs, pushSources: (s: Array<{ sourceId: string; name: string; clientId: string }>) => sourcesCbs.forEach((cb) => cb(s)) }
+})
+vi.mock('../transport/mbus', () => ({
+  createMbusClient: vi.fn(() => mbus.client),
+}))
+
 afterEach(() => {
   vi.clearAllMocks()
 })
@@ -252,5 +276,33 @@ describe('useEngine bridge', () => {
     })
     expect(screen.getByTestId('m3-ready').textContent).toBe('false')
     expect(screen.getByTestId('m3-status').textContent).toMatch(/new version/i)
+  })
+
+  it('hides this tab’s own publications from the mbus source picker', async () => {
+    const engine = createMockEngine()
+    function MbusHarness(): ReactNode {
+      const [state, dispatch] = useReducer(reducer, undefined, () => initialState(defaultSession('t')))
+      const stateRef = useRef(state)
+      stateRef.current = state
+      const { controls, mbusSources } = useEngine(dispatch, stateRef, { createEngine: () => engine })
+      const firstTrack = state.session.tracks[0].id
+      return (
+        <div>
+          <span data-testid="sources">{mbusSources.map((s) => s.sourceId).join(',')}</span>
+          <button onClick={() => void controls.chooseInput(firstTrack, 'mbus')}>mbus-in</button>
+        </div>
+      )
+    }
+    render(<MbusHarness />)
+    await act(async () => {
+      fireEvent.click(screen.getByText('mbus-in'))
+    })
+    await act(async () => {
+      mbus.pushSources([
+        { sourceId: 's1', name: 'mdrone', clientId: 'other-client' },
+        { sourceId: 's2', name: 'mtape', clientId: 'own-client' },
+      ])
+    })
+    expect(screen.getByTestId('sources').textContent).toBe('s1')
   })
 })
