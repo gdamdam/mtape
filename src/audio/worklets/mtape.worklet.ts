@@ -92,6 +92,10 @@ function placementToClip(p: ClipPlacement): Clip {
 class MtapeProcessor extends AudioWorkletProcessor {
   private samples = new Map<string, LiveSource>()
   private liveTracks: LiveTrack[] = []
+  // Audible subset cached from liveTracks (solo/mute law). Recomputed only when
+  // the arrangement is rebuilt — solo/mute never mutate in place — so the audio
+  // render path reads it without allocating a fresh array every quantum.
+  private audibleTracks: LiveTrack[] = []
 
   // Transport.
   private playing = false
@@ -253,6 +257,7 @@ class MtapeProcessor extends AudioWorkletProcessor {
         meterCount: 0,
       }
     })
+    this.audibleTracks = this.computeAudible()
   }
 
   // ------------------------------------------------------------------ audio
@@ -261,7 +266,7 @@ class MtapeProcessor extends AudioWorkletProcessor {
    * Resolve audible tracks (renderSession law): if ANY track is soloed, only
    * soloed & non-muted tracks play; otherwise every non-muted track plays.
    */
-  private audible(): LiveTrack[] {
+  private computeAudible(): LiveTrack[] {
     const anySolo = this.liveTracks.some((lt) => lt.arr.solo)
     if (anySolo) return this.liveTracks.filter((lt) => lt.arr.solo && !lt.arr.mute)
     return this.liveTracks.filter((lt) => !lt.arr.mute)
@@ -322,7 +327,7 @@ class MtapeProcessor extends AudioWorkletProcessor {
   private renderTracks(busL: Float32Array, busR: Float32Array, len: number): void {
     const posSec = this.posFrame / sampleRate
     const dry = this.dry
-    for (const lt of this.audible()) {
+    for (const lt of this.audibleTracks) {
       const arr = lt.arr
       dry.fill(0)
 
