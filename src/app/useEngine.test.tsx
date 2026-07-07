@@ -32,7 +32,7 @@ const mbus = vi.hoisted(() => {
     getState: vi.fn(() => 'connected'),
     onState: vi.fn(() => () => {}),
     getClientId: vi.fn(() => 'own-client'),
-    getSources: vi.fn(() => []),
+    getSources: vi.fn((): Array<{ sourceId: string; name: string; clientId: string }> => []),
     onSources: vi.fn((cb: (s: Array<{ sourceId: string; name: string; clientId: string }>) => void) => {
       sourcesCbs.push(cb)
       return () => {}
