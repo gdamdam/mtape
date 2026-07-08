@@ -4,7 +4,7 @@
 
 **Press record on your browser. Arrange what you played. Bounce a song.**
 
-[![version](https://img.shields.io/badge/version-0.1.12-e8a34a)](./package.json)
+[![version](https://img.shields.io/badge/version-0.1.13-e8a34a)](./package.json)
 [![license](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue)](./LICENSE)
 [![tests](https://img.shields.io/badge/tests-250%20passing-2ea043)](#verification)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6?logo=typescript&logoColor=white)](./tsconfig.json)
@@ -137,9 +137,12 @@ fragment, which is never sent to a server. Microphone and tab capture happen ent
 - **Tab capture is Chromium-desktop only.** `getDisplayMedia` audio capture is not available on
   Firefox/Safari or on mobile; mtape detects this, disables the Tab input, and says so. Mic and
   file import work everywhere with the Web Audio API.
-- **Memory.** Long recordings are chunked to IndexedDB rather than held as Float32 in RAM
-  indefinitely; a single clip is capped (see `CLIP_SEC_MAX`). Very large arrangements are still
-  bounded by available memory during mixdown — bounce in sections if needed.
+- **Memory.** A recording is held as Float32 PCM in RAM for the whole take, then encoded to a WAV
+  blob in IndexedDB when you stop — it is not streamed to disk during capture. A single clip is
+  capped at 30 min (see `CLIP_SEC_MAX`), which is ~690 MB of raw stereo at 48 kHz, and the finalize
+  step transiently needs a few multiples of that while the take is flattened, copied to the engine,
+  and encoded. Very large arrangements are likewise bounded by available memory during mixdown —
+  bounce in sections if needed.
 - Audio starts only after the **Start audio** gesture (browser autoplay policy).
 - **mbus publish** needs the **mpump** link-bridge running locally (`ws://localhost:19876`); without it the "Bus" button just keeps retrying quietly and nothing is published.
 
