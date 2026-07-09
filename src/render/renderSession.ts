@@ -38,6 +38,11 @@ function readSourceMono(src: RenderSource, index: number): number {
   const chs = src.channels
   const n = chs.length
   if (n === 0) return 0
+  // Past either end of the recorded material there is nothing to play.
+  // interpolateSample would clamp to the edge sample (an audible DC hold), so a
+  // clip trimmed past its source must read as silence — the live worklet shares
+  // this law so the two stay equivalent. (L6)
+  if (index < 0 || index >= chs[0].length) return 0
   if (n === 1) return interpolateSample(chs[0], index)
   let sum = 0
   for (let c = 0; c < n; c++) sum += interpolateSample(chs[c], index)

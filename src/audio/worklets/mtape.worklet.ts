@@ -70,6 +70,11 @@ function readSourceMono(src: LiveSource, index: number): number {
   const chs = src.channels
   const n = chs.length
   if (n === 0) return 0
+  // Past either end of the recorded material there is nothing to play.
+  // interpolateSample would clamp to the edge sample (an audible DC hold), so a
+  // clip trimmed past its source must read as silence — matching the offline
+  // render, which shares this law. (L6)
+  if (index < 0 || index >= chs[0].length) return 0
   if (n === 1) return interpolateSample(chs[0], index)
   let sum = 0
   for (let c = 0; c < n; c++) sum += interpolateSample(chs[c], index)
@@ -427,6 +432,12 @@ class MtapeProcessor extends AudioWorkletProcessor {
         const startFrame = this.loop.startSec * sampleRate
         // Preserve the overshoot so looped playback doesn't drift or judder.
         this.posFrame = startFrame + (this.posFrame - endFrame)
+        // Re-latch the click grid to the wrapped position, otherwise the stale
+        // (pre-wrap, higher) beat index makes the next quantum read as a new beat
+        // and fire a spurious metronome click at every loop seam. Mirrors the
+        // seek handler's latch. (M4)
+        const framesPerBeat = secondsPerBeat(this.tempo, METRO_TS) * sampleRate
+        this.lastBeat = framesPerBeat > 0 ? Math.floor(this.posFrame / framesPerBeat) : -1
       }
     }
   }
