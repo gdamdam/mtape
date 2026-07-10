@@ -209,6 +209,18 @@ describe('renderSession — robustness & determinism', () => {
     expect(res.channels[0][500]).toBeGreaterThan(0)
   })
 
+  it('a NaN source sample renders finite (0 there) and never poisons EQ/limiter downstream (FIX #11)', () => {
+    const ch = new Float32Array(sr).fill(0.3)
+    ch[500] = NaN // a single corrupt source sample
+    const sources: SourceMap = new Map([['a', { channels: [ch], sampleRate: sr }]])
+    const clip = makeClip({ audioId: 'a', startSec: 0, durationSec: 1 })
+    const track = makeTrack(0, { pan: -0.3, eq: { lowDb: 6, midDb: -3, highDb: 4 }, clips: [clip] })
+    const res = renderSession(buildSession([track], { gainDb: 6 }), sources, { sampleRate: sr, startSec: 0, endSec: 1 })
+    for (let c = 0; c < 2; c++) {
+      for (let f = 0; f < res.channels[c].length; f++) expect(Number.isFinite(res.channels[c][f])).toBe(true)
+    }
+  })
+
   it('is deterministic: two identical renders are byte-equal', () => {
     const sources: SourceMap = new Map([['a', rampSource(1000, sr, 0.001)]])
     const track = makeTrack(0, {
@@ -225,6 +237,94 @@ describe('renderSession — robustness & determinism', () => {
     for (let f = 0; f < a.channels[0].length; f++) {
       expect(a.channels[0][f]).toBe(b.channels[0][f])
       expect(a.channels[1][f]).toBe(b.channels[1][f])
+    }
+  })
+})
+
+describe('renderSession — region warm-up equivalence (FIX #7)', () => {
+  const sr = 1000
+
+  // A region render [t1,T] should equal the [t1,T] slice of a full [0,T] render:
+  // the warm-up preroll runs EQ + limiter through the REAL earlier signal so the
+  // region no longer starts cold. Frame-exact alignment relies on t1/T landing on
+  // integer frames and varispeed=1 (varispeed resamples and is tested separately).
+  function assertRegionMatchesFullSlice(session: Session, sources: SourceMap, t1: number, T: number, tol = 1e-6): void {
+    const full = renderSession(session, sources, { sampleRate: sr, startSec: 0, endSec: T })
+    const region = renderSession(session, sources, { sampleRate: sr, startSec: t1, endSec: T })
+    const off = Math.round(t1 * sr)
+    expect(region.channels[0].length).toBe(full.channels[0].length - off)
+    for (let c = 0; c < 2; c++) {
+      for (let f = 0; f < region.channels[c].length; f++) {
+        expect(Math.abs(region.channels[c][f] - full.channels[c][off + f])).toBeLessThan(tol)
+      }
+    }
+  }
+
+  it('(a) non-flat EQ + signal before t1: region == full-render slice', () => {
+    // Rising ramp over the whole span ⇒ a genuine filter transient the warm-up
+    // must settle before t1. Peak stays under the ceiling so this isolates EQ.
+    const src = rampSource(2 * sr, sr, 0.0002)
+    const sources: SourceMap = new Map([['a', src]])
+    const clip = makeClip({ audioId: 'a', startSec: 0, durationSec: 2 })
+    const track = makeTrack(0, { pan: -0.3, eq: { lowDb: 6, midDb: -4, highDb: 5 }, clips: [clip] })
+    assertRegionMatchesFullSlice(buildSession([track]), sources, 1, 2)
+  })
+
+  it('(b) an out-fade crossing the region boundary still matches the full slice', () => {
+    // Clip ends at 1.2 with a 0.4s out-fade (0.8→1.2), so the region boundary t1=1.0
+    // falls inside the fade — the fade envelope must line up frame-for-frame.
+    const src = rampSource(2 * sr, sr, 0.0002)
+    const sources: SourceMap = new Map([['a', src]])
+    const clip = makeClip({ audioId: 'a', startSec: 0, durationSec: 1.2, fades: { inSec: 0.1, outSec: 0.4 } })
+    const track = makeTrack(0, { pan: -0.3, eq: { lowDb: 4, midDb: -3, highDb: 4 }, clips: [clip] })
+    assertRegionMatchesFullSlice(buildSession([track]), sources, 1, 2)
+  })
+
+  it('(d) a hot mix (limiter engaged before t1): release history matches the full slice', () => {
+    // High master gain slams the limiter across the whole span; a varying (ramp)
+    // magnitude keeps the release gain moving, so this proves the warm-up carries
+    // the limiter's gain-recovery state, not just the EQ.
+    const src = rampSource(2 * sr, sr, 0.01)
+    const sources: SourceMap = new Map([['a', src]])
+    const clip = makeClip({ audioId: 'a', startSec: 0, durationSec: 2 })
+    const tracks = [0, 1, 2].map((i) => makeTrack(i, { pan: -0.3, clips: [clip] }))
+    assertRegionMatchesFullSlice(buildSession(tracks, { gainDb: 18 }), sources, 1, 2)
+  })
+
+  it('(c) region render with tape saturation + wow/flutter is deterministic', () => {
+    const src = rampSource(2 * sr, sr, 0.001)
+    const sources: SourceMap = new Map([['a', src]])
+    const track = makeTrack(0, {
+      pan: -0.3,
+      tape: { enabled: true, saturation: 0.4, wowFlutter: 0.5 },
+      eq: { lowDb: 3, midDb: -2, highDb: 4 },
+      clips: [makeClip({ audioId: 'a', startSec: 0, durationSec: 2, fades: { inSec: 0.1, outSec: 0.1 } })],
+    })
+    const session = buildSession([track], { drive: 0.3 })
+    const opts = { sampleRate: sr, startSec: 1, endSec: 2 }
+    const a = renderSession(session, sources, opts)
+    const b = renderSession(session, sources, opts)
+    for (let c = 0; c < 2; c++) {
+      expect(a.channels[c].length).toBe(b.channels[c].length)
+      for (let f = 0; f < a.channels[c].length; f++) expect(a.channels[c][f]).toBe(b.channels[c][f])
+    }
+  })
+
+  it('(e) startSec=0 is never prerolled: output is identical for any warmupSec (byte-compat)', () => {
+    const src = rampSource(sr, sr, 0.0005)
+    const sources: SourceMap = new Map([['a', src]])
+    const track = makeTrack(0, {
+      pan: -0.3,
+      eq: { lowDb: 5, midDb: -3, highDb: 4 },
+      tape: { enabled: true, saturation: 0.3, wowFlutter: 0.4 },
+      clips: [makeClip({ audioId: 'a', startSec: 0, durationSec: 1, fades: { inSec: 0.1, outSec: 0.1 } })],
+    })
+    const session = buildSession([track], { drive: 0.2 })
+    const a = renderSession(session, sources, { sampleRate: sr, startSec: 0, endSec: 1, warmupSec: 0 })
+    const b = renderSession(session, sources, { sampleRate: sr, startSec: 0, endSec: 1, warmupSec: 0.5 })
+    expect(a.channels[0].length).toBe(b.channels[0].length)
+    for (let c = 0; c < 2; c++) {
+      for (let f = 0; f < a.channels[c].length; f++) expect(a.channels[c][f]).toBe(b.channels[c][f])
     }
   })
 })

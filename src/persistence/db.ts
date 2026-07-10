@@ -13,7 +13,7 @@
 // is intentionally NOT unit-tested; it is exercised by browser/manual QA. It is
 // kept fully typed so the compiler still guards its shape.
 
-import { sanitizeSession, type Session } from '../audio/contracts'
+import { isFutureSchema, sanitizeSession, SESSION_SCHEMA_VERSION, type Session } from '../audio/contracts'
 
 export const DB_NAME = 'mtape'
 export const DB_VERSION = 1
@@ -221,6 +221,20 @@ export async function getSession(id: string): Promise<Session | null> {
   const raw = await withStore(db, SESSIONS_STORE, 'readonly', (store) => requestAsync<unknown>(store.get(id)))
   // Read path is a trust boundary: coerce whatever was stored into a valid model.
   if (raw == null) return null
+  // A row written by a NEWER build may carry fields this build's sanitizer does
+  // not know about; running it through sanitizeSession would silently downgrade
+  // it to the current schema (dropping those fields) and — worse — a later
+  // putSession could then write that downgraded value back over the newer stored
+  // row, an irreversible data loss. Surface it as a recoverable error instead and
+  // leave the stored row untouched (this read never writes). getAllSessionMeta
+  // stays list-safe: it only reads, so such a row still appears there.
+  if (isFutureSchema(raw)) {
+    const sv = (raw as { schemaVersion?: unknown }).schemaVersion
+    throw new Error(
+      `This session was saved by a newer version of mtape (schema v${String(sv)}; this build reads v${SESSION_SCHEMA_VERSION}). ` +
+        'Update mtape to open it — the stored session has been left untouched.',
+    )
+  }
   const session = sanitizeSession(raw)
   // Seed the CAS baseline: a subsequent putSession from this tab should not be
   // treated as a conflict, and a concurrent tab that advances the row while we

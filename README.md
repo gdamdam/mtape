@@ -4,9 +4,9 @@
 
 **Press record on your browser. Arrange what you played. Bounce a song.**
 
-[![version](https://img.shields.io/badge/version-0.1.15-e8a34a)](./package.json)
+[![version](https://img.shields.io/badge/version-0.2.0-e8a34a)](./package.json)
 [![license](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue)](./LICENSE)
-[![tests](https://img.shields.io/badge/tests-250%20passing-2ea043)](#verification)
+[![tests](https://img.shields.io/badge/tests-313%20passing-2ea043)](#verification)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6?logo=typescript&logoColor=white)](./tsconfig.json)
 [![React](https://img.shields.io/badge/React-19-61dafb?logo=react&logoColor=white)](https://react.dev)
 [![Vite](https://img.shields.io/badge/Vite-8-646cff?logo=vite&logoColor=white)](https://vite.dev)
@@ -150,6 +150,11 @@ fragment, which is never sent to a server. Microphone and tab capture happen ent
 
 No MIDI sequencing (see midip / mpump), no plugin hosting, no time-stretching, no automation
 lanes, no collaboration. mtape is a tape recorder and arranger, not a full DAW.
+
+Multi-level undo/redo is also out of scope for v1. Every edit command is atomic — a failed or
+no-op command returns the prior state untouched, and each edit produces exactly one valid
+session — so the foundations for a history stack are in place, but the stack itself is
+intentionally not built this pass.
 
 ## Physical-device QA checklist
 

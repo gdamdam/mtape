@@ -75,10 +75,14 @@ function readSourceMono(src: LiveSource, index: number): number {
   // clip trimmed past its source must read as silence — matching the offline
   // render, which shares this law. (L6)
   if (index < 0 || index >= chs[0].length) return 0
-  if (n === 1) return interpolateSample(chs[0], index)
-  let sum = 0
-  for (let c = 0; c < n; c++) sum += interpolateSample(chs[c], index)
-  return sum / n
+  let s: number
+  if (n === 1) s = interpolateSample(chs[0], index)
+  else {
+    let sum = 0
+    for (let c = 0; c < n; c++) sum += interpolateSample(chs[c], index)
+    s = sum / n
+  }
+  return Number.isFinite(s) ? s : 0 // a corrupt source sample must not poison persistent EQ/limiter state
 }
 
 /** Reconstruct a full `Clip` from the leaner arrangement placement. */
@@ -146,6 +150,12 @@ class MtapeProcessor extends AudioWorkletProcessor {
   private mPeakR = 0
   private mSumSq = 0
   private mFrames = 0
+  // Clip indicator: latched TRUE the moment any post-limiter peak crosses the
+  // over-ceiling threshold and HELD across telemetry posts until transport stop.
+  // Peak/RMS are per-window (reset each post); a single-quantum overload would
+  // otherwise flash for one ~21 ms window and be unseeable. The UI (Meter.tsx)
+  // reflects this flag verbatim and does not latch on its own. (Fix #6)
+  private clipLatched = false
 
   constructor() {
     super()
@@ -219,6 +229,7 @@ class MtapeProcessor extends AudioWorkletProcessor {
         this.recording = false
         this.playing = false
         this.countInRemaining = 0
+        this.clipLatched = false // stop clears the held clip LED (Fix #6)
         this.port.postMessage({ type: 'ended' } satisfies EngineEvent)
         break
       case 'record': {
@@ -524,17 +535,25 @@ class MtapeProcessor extends AudioWorkletProcessor {
   }
 
   private finalizeRecording(): void {
-    if (this.recTrackId !== '' && this.recStarted) {
-      this.flushChunk(true)
-      // RAW start (uncompensated). The engine subtracts latency + mints the id.
-      this.port.postMessage({
-        type: 'recordComplete',
-        trackId: this.recTrackId,
-        audioId: '',
-        startSec: this.recStartFrame / sampleRate,
-        durationSec: this.recTotalFrames / sampleRate,
-      } satisfies EngineEvent)
-    }
+    // Only ever reached from the stop handler while a record was active, so ALWAYS
+    // report completion — even a zero-capture take (nothing armed, or no input
+    // quantum ever delivered so recStarted never latched). Otherwise the main
+    // thread never shift()s the take id it queued at record start and its FIFO
+    // drifts permanently off-by-one. (Fix #4)
+    if (this.recStarted) this.flushChunk(true)
+    // 0 when never started: recStartFrame/recTotalFrames only carry meaning once
+    // the channel-count latch fired, so a zero-capture take reports start 0 / dur 0
+    // and no chunks — the engine retires the id and skips materializing an empty clip.
+    const startFrame = this.recStarted ? this.recStartFrame : 0
+    const totalFrames = this.recStarted ? this.recTotalFrames : 0
+    // RAW start (uncompensated). The engine subtracts latency + mints the id.
+    this.port.postMessage({
+      type: 'recordComplete',
+      trackId: this.recTrackId,
+      audioId: '',
+      startSec: startFrame / sampleRate,
+      durationSec: totalFrames / sampleRate,
+    } satisfies EngineEvent)
     this.recStarted = false
   }
 
@@ -558,12 +577,15 @@ class MtapeProcessor extends AudioWorkletProcessor {
     })
 
     const masterRms = this.mFrames > 0 ? Math.sqrt(this.mSumSq / (this.mFrames * 2)) : 0
+    // Latch the clip flag across posts (held until stop) so a transient overload
+    // that only touched one window is still visible. (Fix #6)
+    if (this.mPeakL >= 0.999 || this.mPeakR >= 0.999) this.clipLatched = true
     this.port.postMessage({
       type: 'meters',
       masterPeakL: this.mPeakL,
       masterPeakR: this.mPeakR,
       masterRms,
-      clip: this.mPeakL >= 0.999 || this.mPeakR >= 0.999,
+      clip: this.clipLatched,
       tracks,
     } satisfies EngineEvent)
 

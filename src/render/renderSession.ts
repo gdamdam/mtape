@@ -29,7 +29,21 @@ export interface RenderOptions {
   startSec: number
   endSec: number
   channels?: 1 | 2
+  /** Test-only override for the region warm-up preroll (seconds). Defaults to
+   *  WARMUP_SEC; callers never need to set it. */
+  warmupSec?: number
 }
+
+/**
+ * Region warm-up preroll. A render with startSec>0 builds a FRESH EQ + limiter
+ * and would otherwise start cold, whereas live playback reaches startSec with
+ * warm filter/gain history. We process this many seconds of the REAL earlier
+ * signal ahead of the region and slice it off, so EQ transients have settled and
+ * the limiter's release gain matches by the time the requested region begins.
+ * 0.5s comfortably exceeds the limiter's default 50 ms release plus biquad
+ * settling (a few ms at audio rates); the equivalence test validates sufficiency.
+ */
+const WARMUP_SEC = 0.5
 
 /** Read a source as mono at a fractional SOURCE-sample index. Multichannel
  *  sources are averaged so every track chain downstream is mono (matching the
@@ -43,10 +57,14 @@ function readSourceMono(src: RenderSource, index: number): number {
   // clip trimmed past its source must read as silence — the live worklet shares
   // this law so the two stay equivalent. (L6)
   if (index < 0 || index >= chs[0].length) return 0
-  if (n === 1) return interpolateSample(chs[0], index)
-  let sum = 0
-  for (let c = 0; c < n; c++) sum += interpolateSample(chs[c], index)
-  return sum / n
+  let s: number
+  if (n === 1) s = interpolateSample(chs[0], index)
+  else {
+    let sum = 0
+    for (let c = 0; c < n; c++) sum += interpolateSample(chs[c], index)
+    s = sum / n
+  }
+  return Number.isFinite(s) ? s : 0 // a corrupt source sample must not poison persistent EQ/limiter state
 }
 
 /**
@@ -114,19 +132,33 @@ function resampleChannel(input: Float32Array, readStride: number): Float32Array 
 export function renderSession(session: Session, sources: SourceMap, opts: RenderOptions): RenderResult {
   const { sampleRate, startSec, endSec } = opts
   const channelCount = opts.channels ?? 2
-  const nFrames = Math.max(0, Math.round((endSec - startSec) * sampleRate))
+  // Frames the CALLER asked for (the requested region), which also drives the
+  // zero-length guard — the warm-up preroll below is internal and invisible.
+  const outFrames = Math.max(0, Math.round((endSec - startSec) * sampleRate))
 
   // Zero-length region ⇒ empty channels (still a valid, well-formed result).
-  if (nFrames === 0) {
+  if (outFrames === 0) {
     const empty = Array.from({ length: channelCount }, () => new Float32Array(0))
     return { channels: empty, sampleRate, durationSec: 0 }
   }
+
+  // Warm the EQ + limiter through a preroll of real earlier signal so a region
+  // render (startSec>0) matches live/full-render. preFrames is an integer so the
+  // warmed sample grid stays frame-aligned with a full render; startSec=0 ⇒
+  // preFrames=0 ⇒ byte-identical to a no-warmup render.
+  const warmupSec = opts.warmupSec ?? WARMUP_SEC
+  const preFrames = Math.min(Math.max(0, Math.round(startSec * sampleRate)), Math.max(0, Math.round(warmupSec * sampleRate)))
+  const renderStart = startSec - preFrames / sampleRate
+  const nFrames = outFrames + preFrames // total frames processed, incl. preroll
+  // Internal opts whose startSec is the earlier (warmed) origin; every arrTime
+  // downstream is derived from renderStart so the preroll reads real material.
+  const renderOpts: RenderOptions = { ...opts, startSec: renderStart }
 
   const busL = new Float32Array(nFrames)
   const busR = new Float32Array(nFrames)
 
   for (const track of audibleTracks(session.tracks)) {
-    const buf = renderTrackDry(track, sources, opts, nFrames)
+    const buf = renderTrackDry(track, sources, renderOpts, nFrames)
 
     // 3. Per-track EQ — flat bands (0 dB) are an exact passthrough.
     const eq = new ThreeBandEqProcessor(track.eq, sampleRate)
@@ -144,7 +176,7 @@ export function renderSession(session: Session, sources: SourceMap, opts: Render
         // drives the LFOs so the wander is deterministic and phase-stable.
         const sat2 = buf.slice()
         for (let f = 0; f < nFrames; f++) {
-          const arrTime = startSec + f / sampleRate
+          const arrTime = renderStart + f / sampleRate
           const offsetSamples = wowFlutterOffset(arrTime, wf) * sampleRate
           buf[f] = interpolateSample(sat2, f - offsetSamples)
         }
@@ -178,13 +210,19 @@ export function renderSession(session: Session, sources: SourceMap, opts: Render
     busR[f] = limR.process(r)
   }
 
+  // 6b. Drop the warm-up preroll now that EQ + limiter are warm, BEFORE varispeed
+  // and downmix, so timing and output length match the requested region exactly.
+  // preFrames=0 (startSec=0) leaves busL/busR untouched — byte-compat guard.
+  const warmL = preFrames > 0 ? busL.subarray(preFrames) : busL
+  const warmR = preFrames > 0 ? busR.subarray(preFrames) : busR
+
   // 7. Varispeed: resample the final stereo mix. varispeed>1 ⇒ shorter + higher.
-  let outL: Float32Array = busL
-  let outR: Float32Array = busR
+  let outL: Float32Array = warmL
+  let outR: Float32Array = warmR
   const varispeed = session.master.varispeed
   if (varispeed !== 1) {
-    outL = resampleChannel(busL, varispeed)
-    outR = resampleChannel(busR, varispeed)
+    outL = resampleChannel(warmL, varispeed)
+    outR = resampleChannel(warmR, varispeed)
   }
 
   // 8. Optional stereo → mono downmix at the very end.

@@ -61,11 +61,17 @@ export function trimIn(clip: Clip, newStartSec: number): Clip {
 
 /**
  * Drag the out-handle to an absolute end position. Duration cannot collapse to
- * zero. Source availability (an upper cap) is the caller's concern — the clip
- * model carries no source length — so we only enforce the lower bound.
+ * zero. The clip model carries no source length, so the source cap is passed in
+ * as `maxSourceSec` (total source seconds). When known and finite, we clamp so a
+ * clip can never sound past its source end: offsetSec + durationSec <= source.
+ * The lower bound still wins — we never clamp below MIN_DURATION_SEC.
  */
-export function trimOut(clip: Clip, newEndSec: number): Clip {
-  return { ...clip, durationSec: Math.max(MIN_DURATION_SEC, newEndSec - clip.startSec) }
+export function trimOut(clip: Clip, newEndSec: number, maxSourceSec?: number): Clip {
+  let durationSec = Math.max(MIN_DURATION_SEC, newEndSec - clip.startSec)
+  if (maxSourceSec !== undefined && Number.isFinite(maxSourceSec)) {
+    durationSec = Math.min(durationSec, Math.max(MIN_DURATION_SEC, maxSourceSec - clip.offsetSec))
+  }
+  return { ...clip, durationSec }
 }
 
 /**

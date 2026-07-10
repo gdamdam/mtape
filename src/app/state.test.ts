@@ -218,6 +218,116 @@ describe('clip lifecycle', () => {
   })
 })
 
+describe('TRIM_OUT source cap (FIX #1)', () => {
+  it('caps duration to the source length passed as maxDurationSec', () => {
+    const s0 = seeded() // clip c1: startSec 4, offset 0, duration 8
+    const tid = s0.session.tracks[0].id
+    // Drag the out-point far past the source; a 6s source caps duration to 6.
+    const c = reducer(s0, { type: 'TRIM_OUT', trackId: tid, clipId: 'c1', newEndSec: 100, maxDurationSec: 6 }).session.tracks[0].clips[0]
+    expect(c.durationSec).toBeCloseTo(6)
+  })
+
+  it('a non-zero offset reduces the capped duration', () => {
+    const s0 = freshState()
+    const tid = s0.session.tracks[0].id
+    const s1 = reducer(s0, { type: 'ADD_CLIP', trackId: tid, clip: clip({ offsetSec: 2 }) })
+    // 6s source, 2s already consumed by the offset ⇒ 4s of playable material.
+    const c = reducer(s1, { type: 'TRIM_OUT', trackId: tid, clipId: 'c1', newEndSec: 100, maxDurationSec: 6 }).session.tracks[0].clips[0]
+    expect(c.durationSec).toBeCloseTo(4)
+  })
+
+  it('undefined maxDurationSec leaves the trim uncapped (pre-FIX behaviour)', () => {
+    const s0 = seeded()
+    const tid = s0.session.tracks[0].id
+    // newEndSec 9 with startSec 4 ⇒ duration 5, exactly as before the cap existed.
+    expect(reducer(s0, { type: 'TRIM_OUT', trackId: tid, clipId: 'c1', newEndSec: 9 }).session.tracks[0].clips[0].durationSec).toBeCloseTo(5)
+  })
+})
+
+describe('atomicity (FIX #10)', () => {
+  it('TRIM_OUT on a missing track leaves the session identity untouched', () => {
+    const s0 = seeded()
+    const s1 = reducer(s0, { type: 'TRIM_OUT', trackId: 'no-such-track', clipId: 'c1', newEndSec: 9 })
+    expect(s1.session).toBe(s0.session) // no fork of the durable session
+  })
+
+  it('ADD_CLIP with an unbacked (audioId-less) clip returns the same state reference', () => {
+    const s0 = freshState()
+    const tid = s0.session.tracks[0].id
+    expect(reducer(s0, { type: 'ADD_CLIP', trackId: tid, clip: clip({ audioId: '' }) })).toBe(s0)
+  })
+
+  it('DUPLICATE_CLIP of a missing clip returns the same state reference', () => {
+    const s0 = seeded()
+    const tid = s0.session.tracks[0].id
+    expect(reducer(s0, { type: 'DUPLICATE_CLIP', trackId: tid, clipId: 'ghost', newId: 'x' })).toBe(s0)
+  })
+
+  it('ADD_TRACK at TRACK_COUNT_MAX returns the same state reference', () => {
+    let s = freshState()
+    while (s.session.tracks.length < TRACK_COUNT_MAX) s = reducer(s, { type: 'ADD_TRACK', id: `t${s.session.tracks.length}` })
+    expect(reducer(s, { type: 'ADD_TRACK', id: 'overflow' })).toBe(s)
+  })
+
+  it('REMOVE_TRACK at TRACK_COUNT_MIN returns the same state reference', () => {
+    const s0 = freshState() // exactly TRACK_COUNT_MIN tracks
+    expect(reducer(s0, { type: 'REMOVE_TRACK', trackId: s0.session.tracks[0].id })).toBe(s0)
+  })
+
+  it('SPLIT_CLIP is one atomic dispatch: two valid halves, refs/fades/gain/frames preserved', () => {
+    const s0 = freshState()
+    const tid = s0.session.tracks[0].id
+    const rich = clip({ id: 'whole', audioId: 'src1', startSec: 4, offsetSec: 2, durationSec: 8, gainDb: -4, fades: { inSec: 1, outSec: 1 } })
+    const seededRich = reducer(s0, { type: 'ADD_CLIP', trackId: tid, clip: rich })
+    const untouchedTrack = seededRich.session.tracks[1]
+
+    const s1 = reducer(seededRich, { type: 'SPLIT_CLIP', trackId: tid, clipId: 'whole', atSec: 8, newIdA: 'A', newIdB: 'B' })
+    // Atomic: a single new session; the non-target track keeps its identity.
+    expect(s1.session).not.toBe(seededRich.session)
+    expect(s1.session.tracks[1]).toBe(untouchedTrack)
+
+    const [a, b] = s1.session.tracks[0].clips
+    expect(s1.session.tracks[0].clips).toHaveLength(2)
+    // Source refs preserved on both halves.
+    expect(a.audioId).toBe('src1')
+    expect(b.audioId).toBe('src1')
+    // Gain preserved; fades routed in→A, out→B.
+    expect(a.gainDb).toBe(-4)
+    expect(b.gainDb).toBe(-4)
+    expect(a.fades).toEqual({ inSec: 1, outSec: 0 })
+    expect(b.fades).toEqual({ inSec: 0, outSec: 1 })
+    // Frame-exact positions: A=[4,8], B=[8,12], B advances its source offset.
+    expect(a.startSec).toBeCloseTo(4)
+    expect(a.durationSec).toBeCloseTo(4)
+    expect(b.startSec).toBeCloseTo(8)
+    expect(b.offsetSec).toBeCloseTo(6) // 2 + 4
+    expect(a.durationSec + b.durationSec).toBeCloseTo(8)
+  })
+
+  it('DUPLICATE_CLIP is one atomic dispatch: copy preserves source/gain/fades/duration and frame-exact start', () => {
+    const s0 = freshState()
+    const tid = s0.session.tracks[0].id
+    const rich = clip({ id: 'orig', audioId: 'src1', startSec: 4, offsetSec: 2, durationSec: 8, gainDb: -4, fades: { inSec: 1, outSec: 1 } })
+    const seededRich = reducer(s0, { type: 'ADD_CLIP', trackId: tid, clip: rich })
+    const untouchedTrack = seededRich.session.tracks[1]
+
+    const s1 = reducer(seededRich, { type: 'DUPLICATE_CLIP', trackId: tid, clipId: 'orig', newId: 'dup', atSec: 20 })
+    expect(s1.session).not.toBe(seededRich.session)
+    expect(s1.session.tracks[1]).toBe(untouchedTrack) // atomic: other track untouched
+
+    const clips = s1.session.tracks[0].clips
+    expect(clips.map((c) => c.id)).toEqual(['orig', 'dup'])
+    const copy = clips[1]
+    expect(copy.audioId).toBe('src1')
+    expect(copy.gainDb).toBe(-4)
+    expect(copy.offsetSec).toBeCloseTo(2)
+    expect(copy.durationSec).toBeCloseTo(8)
+    expect(copy.startSec).toBe(20) // frame-exact placement
+    expect(copy.fades).toEqual({ inSec: 1, outSec: 1 })
+    expect(copy.fades).not.toBe(clips[0].fades) // deep-copied, not aliased
+  })
+})
+
 describe('master + session meta', () => {
   it('SET_MASTER merges and clamps', () => {
     const s = reducer(freshState(), { type: 'SET_MASTER', patch: { drive: 5, varispeed: 0.75 } })

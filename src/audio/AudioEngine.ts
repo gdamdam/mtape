@@ -229,7 +229,13 @@ export class AudioEngine implements EngineControls {
 
   attachInput(trackId: string, stream: MediaStream): void {
     const ctx = this.ctx
-    if (!ctx || !this.node) return
+    if (!ctx || !this.node) {
+      // The graph is gone (disposed) or never started. Never silently drop a
+      // LIVE stream — a mic/tab capture whose async acquisition resolved after
+      // teardown would keep the device open forever. Stop its tracks. (Fix #8)
+      for (const t of stream.getTracks()) t.stop()
+      return
+    }
     this.detachInput(trackId) // idempotent: replace any prior attachment
     const source = ctx.createMediaStreamSource(stream)
     source.connect(this.node) // feed the worklet's record bus (input 0)

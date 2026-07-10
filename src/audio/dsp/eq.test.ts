@@ -100,6 +100,28 @@ describe('Biquad instance', () => {
   })
 })
 
+describe('denormal + NaN flush (Biquad.process)', () => {
+  it('decays to exactly 0 after a step then silence — no denormal tail, never NaN', () => {
+    const b = new Biquad(lowShelf(120, 12, SR)) // non-flat ⇒ real feedback state
+    let y = b.process(1) // step in
+    for (let i = 0; i < 100000; i++) {
+      y = b.process(0) // long run of zeros
+      expect(Number.isNaN(y)).toBe(false)
+    }
+    expect(y).toBe(0) // flushed to exactly zero, not a denormal asymptote
+  })
+
+  it('a NaN input does not permanently poison the output (recovers to finite)', () => {
+    const b = new Biquad(peaking(1000, 6, SR))
+    b.process(0.5)
+    expect(Number.isFinite(b.process(NaN))).toBe(true) // guard flushes the NaN
+    // Feeding finite input again yields finite output within a few samples.
+    let y = 0
+    for (let i = 0; i < 8; i++) y = b.process(0.5)
+    expect(Number.isFinite(y)).toBe(true)
+  })
+})
+
 describe('ThreeBandEqProcessor', () => {
   it('a low-shelf boost raises the energy of a low-frequency signal', () => {
     // 60 Hz sine, one cycle sampled coarsely — compare summed |amplitude|.

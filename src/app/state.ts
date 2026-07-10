@@ -70,7 +70,7 @@ export type Action =
   | { type: 'UPDATE_CLIP'; trackId: string; clipId: string; clip: Clip }
   | { type: 'MOVE_CLIP'; trackId: string; clipId: string; startSec: number }
   | { type: 'TRIM_IN'; trackId: string; clipId: string; newStartSec: number }
-  | { type: 'TRIM_OUT'; trackId: string; clipId: string; newEndSec: number }
+  | { type: 'TRIM_OUT'; trackId: string; clipId: string; newEndSec: number; maxDurationSec?: number }
   | { type: 'SPLIT_CLIP'; trackId: string; clipId: string; atSec: number; newIdA: string; newIdB: string }
   | { type: 'DUPLICATE_CLIP'; trackId: string; clipId: string; newId: string; atSec?: number }
   | { type: 'DELETE_CLIP'; trackId: string; clipId: string }
@@ -221,7 +221,9 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, session: mapClip(state.session, action.trackId, action.clipId, (c) => trimIn(c, action.newStartSec)) }
 
     case 'TRIM_OUT':
-      return { ...state, session: mapClip(state.session, action.trackId, action.clipId, (c) => trimOut(c, action.newEndSec)) }
+      // maxDurationSec is the clip's total source length (undefined ⇒ no cap):
+      // the command-boundary guard that keeps a trim from extending past source.
+      return { ...state, session: mapClip(state.session, action.trackId, action.clipId, (c) => trimOut(c, action.newEndSec, action.maxDurationSec)) }
 
     case 'SPLIT_CLIP':
       return {

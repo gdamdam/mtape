@@ -335,4 +335,96 @@ describe('useEngine bridge', () => {
     })
     expect(screen.getByTestId('seeded').textContent).toBe('s1')
   })
+
+  it('does not materialize a clip for a zero-capture take (durationSec 0) (Fix #4)', async () => {
+    const engine = createMockEngine()
+    render(<Harness engine={engine} />)
+    await startAudio()
+    expect(screen.getByTestId('clips').textContent).toBe('0')
+    await act(async () => {
+      // Zero-capture completion: AudioEngine has already retired the FIFO id; the
+      // hook must NOT drop an empty clip on the timeline.
+      engine.emit({ type: 'recordComplete', trackId: 't1', audioId: 'z', startSec: 0, durationSec: 0 })
+    })
+    expect(screen.getByTestId('clips').textContent).toBe('0')
+  })
+
+  it('drops a stale capture stream (stops its tracks, no attach) when input is switched mid-acquisition (Fix #8)', async () => {
+    const base = createMockEngine()
+    const trackStop = vi.fn()
+    const staleStream = { getTracks: () => [{ stop: trackStop }], getAudioTracks: () => [{}] } as unknown as MediaStream
+    const attach = vi.fn()
+    let resolveMic: (s: MediaStream) => void = () => {}
+    const engine: MockEngine = {
+      ...base,
+      captureMic: () => new Promise<MediaStream>((res) => (resolveMic = res)),
+      attachInput: (trackId: string, stream: MediaStream) => attach(trackId, stream),
+    }
+    let ctrls: UiControls | undefined
+    let firstTrack = ''
+    function GenHarness({ onReady }: { onReady: (c: UiControls, track: string) => void }): ReactNode {
+      const [state, dispatch] = useReducer(reducer, undefined, () => initialState(defaultSession('t')))
+      const ref = useRef(state)
+      ref.current = state
+      const { controls } = useEngine(dispatch, ref, { createEngine: () => engine })
+      // Capture through a callback (not a direct outer-var write in render) to
+      // match the Harness pattern and satisfy react-hooks/globals.
+      onReady(controls, state.session.tracks[0].id)
+      return <button onClick={() => void controls.start()}>gen-start</button>
+    }
+    render(
+      <GenHarness
+        onReady={(c, t) => {
+          ctrls = c
+          firstTrack = t
+        }}
+      />,
+    )
+    await act(async () => {
+      fireEvent.click(screen.getByText('gen-start'))
+    })
+    // Begin mic acquisition (suspends on the pending promise)...
+    let pending: Promise<void> | undefined
+    await act(async () => {
+      pending = ctrls!.chooseInput(firstTrack, 'mic')
+    })
+    // ...user switches to 'none' before it resolves — bumps the track generation.
+    await act(async () => {
+      await ctrls!.chooseInput(firstTrack, 'none')
+    })
+    // The late mic resolve is now stale: its tracks must be stopped, not attached.
+    await act(async () => {
+      resolveMic(staleStream)
+      await pending
+    })
+    expect(trackStop).toHaveBeenCalled()
+    expect(attach).not.toHaveBeenCalled()
+  })
+
+  it('exposes sourceDurationSec for a cached take and undefined otherwise (Contract S)', async () => {
+    const engine = createMockEngine()
+    let durOf: ((audioId: string) => number | undefined) | undefined
+    function SHarness({ onReady }: { onReady: (d: (audioId: string) => number | undefined) => void }): ReactNode {
+      const [state, dispatch] = useReducer(reducer, undefined, () => initialState(defaultSession('t')))
+      const ref = useRef(state)
+      ref.current = state
+      const { controls, sourceDurationSec } = useEngine(dispatch, ref, { createEngine: () => engine })
+      onReady(sourceDurationSec)
+      return <button onClick={() => void controls.start()}>s-start</button>
+    }
+    render(<SHarness onReady={(d) => (durOf = d)} />)
+    await act(async () => {
+      fireEvent.click(screen.getByText('s-start'))
+    })
+    const samples = new Float32Array(100).fill(0.25)
+    await act(async () => {
+      engine.emit({ type: 'recordChunk', trackId: 't1', audioId: 'srcX', channels: [samples], startFrame: 0 })
+      engine.emit({ type: 'recordComplete', trackId: 't1', audioId: 'srcX', startSec: 0, durationSec: 100 / 48000 })
+    })
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    expect(durOf!('srcX')).toBeCloseTo(100 / 48000, 6)
+    expect(durOf!('missing')).toBeUndefined()
+  })
 })

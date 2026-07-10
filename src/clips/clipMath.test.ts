@@ -128,6 +128,70 @@ describe('trimOut', () => {
     expect(trimOut(makeClip(), 10).durationSec).toBeGreaterThan(0)
     expect(trimOut(makeClip(), 5).durationSec).toBeGreaterThan(0)
   })
+
+  describe('source cap (maxSourceSec)', () => {
+    it('undefined maxSourceSec keeps the pre-cap behaviour (no cap)', () => {
+      // 1000s past the source: with no cap it extends freely, exactly as before.
+      expect(trimOut(makeClip(), 1000).durationSec).toBeCloseTo(990)
+    })
+
+    it('trims out exactly at the source end (offset 0)', () => {
+      const c = makeClip({ startSec: 0, offsetSec: 0, durationSec: 4 })
+      // 10s of source, drag the out-point precisely to the source end.
+      expect(trimOut(c, 10, 10).durationSec).toBeCloseTo(10)
+      expect(clipEndSec(trimOut(c, 10, 10))).toBeCloseTo(10)
+    })
+
+    it('trims out exactly at the source end (non-zero offset)', () => {
+      // offset 5 into a 20s source ⇒ 15s of playable material remain.
+      const c = makeClip() // startSec 10, offset 5
+      const out = trimOut(c, 25, 20) // exactly source end
+      expect(out.durationSec).toBeCloseTo(15)
+      expect(clipEndSec(out)).toBeCloseTo(25)
+    })
+
+    it('clamps a trim past the source end back to the source', () => {
+      const out = trimOut(makeClip(), 1000, 20) // way past; source is 20s
+      expect(out.durationSec).toBeCloseTo(15) // 20 - offset 5
+      expect(clipEndSec(out)).toBeCloseTo(25)
+    })
+
+    it('a non-zero offset reduces the available duration', () => {
+      // Same 20s source, same requested end, only the offset differs.
+      const atZero = trimOut(makeClip({ offsetSec: 0 }), 1000, 20)
+      const atFive = trimOut(makeClip({ offsetSec: 5 }), 1000, 20)
+      expect(atZero.durationSec).toBeCloseTo(20)
+      expect(atFive.durationSec).toBeCloseTo(15)
+    })
+
+    it('never clamps below MIN_DURATION when offset exceeds the source', () => {
+      // offset (5) past a tiny 3s source ⇒ cap would be negative; MIN floor wins.
+      const out = trimOut(makeClip(), 1000, 3)
+      expect(out.durationSec).toBeGreaterThan(0)
+      expect(out.durationSec).toBeLessThan(1e-3)
+    })
+
+    it('still clamps after split → the B half advances its offset', () => {
+      // Split makeClip (offset 5) at 18: B.offset = 5 + 8 = 13 into a 20s source.
+      const [, b] = splitClip(makeClip(), 18, 'A', 'B')
+      const out = trimOut(b, 1000, 20)
+      expect(out.durationSec).toBeCloseTo(7) // 20 - 13
+      expect(clipEndSec(out)).toBeCloseTo(25)
+    })
+
+    it('still clamps after duplicate (offset preserved)', () => {
+      const dup = duplicateClip(makeClip(), 'c2') // startSec 30, offset 5
+      const out = trimOut(dup, 1000, 20)
+      expect(out.durationSec).toBeCloseTo(15) // 20 - 5
+    })
+
+    it('still clamps after move (offset preserved, start shifted)', () => {
+      const moved = moveClip(makeClip(), 5) // startSec 15, offset 5
+      const out = trimOut(moved, 1000, 20)
+      expect(out.durationSec).toBeCloseTo(15) // 20 - 5
+      expect(clipEndSec(out)).toBeCloseTo(30) // 15 + 15
+    })
+  })
 })
 
 describe('splitClip', () => {

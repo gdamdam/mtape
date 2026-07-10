@@ -32,7 +32,7 @@ export function App(): ReactNode {
   const stateRef = useRef(state)
   stateRef.current = state
 
-  const { controls, posRef, meterRef, mbusSources, mbusChoices } = useEngine(dispatch, stateRef)
+  const { controls, posRef, meterRef, mbusSources, mbusChoices, sourceDurationSec } = useEngine(dispatch, stateRef)
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
@@ -107,7 +107,7 @@ export function App(): ReactNode {
 
       <TransportBar state={state} controls={controls} dispatch={dispatch} posRef={posRef} />
 
-      <Timeline state={state} controls={controls} dispatch={dispatch} posRef={posRef} />
+      <Timeline state={state} controls={controls} dispatch={dispatch} posRef={posRef} sourceDurationSec={sourceDurationSec} />
 
       <div className="app__console">
         <div className="mixer" aria-label="Mixer">

@@ -73,6 +73,9 @@ export interface UseEngineResult {
   mbusSources: SourceInfo[]
   /** Per-track subscribed mbus sourceId (session-transient). */
   mbusChoices: Record<string, string>
+  /** Decoded duration (seconds) of a cached source asset, or undefined if the
+   *  asset isn't resident this session. */
+  sourceDurationSec: (audioId: string) => number | undefined
 }
 
 // --- pure-ish helpers ------------------------------------------------------
@@ -144,6 +147,11 @@ export function useEngine(dispatch: Dispatch<Action>, stateRef: RefObject<AppSta
   // In-flight engine-creation promise, so two rapid start() calls share one
   // engine instead of racing to build two (the first would leak). (M12)
   const enginePromiseRef = useRef<Promise<EngineControls> | null>(null)
+  // Per-track generation token bumped on every chooseInput. getUserMedia/
+  // getDisplayMedia resolve asynchronously; a newer input choice (or an unmount)
+  // must invalidate an in-flight capture so a stale/live stream isn't attached
+  // after the user moved on — otherwise the mic/tab stays open. (Fix #8)
+  const inputGenRef = useRef<Map<string, number>>(new Map())
   // mbus publish (see src/transport/mbus): intent + client/publication, kept in
   // refs like the engine itself. Off by default; until enabled no client exists
   // and no socket is opened. applyMbusPublish reconciles intent with the live
@@ -259,6 +267,11 @@ export function useEngine(dispatch: Dispatch<Action>, stateRef: RefObject<AppSta
     async (ev: Extract<EngineEvent, { type: 'recordComplete' }>): Promise<void> => {
       const chunks = recChunksRef.current.get(ev.audioId) ?? []
       recChunksRef.current.delete(ev.audioId)
+      // Zero-capture take (nothing armed, or no input quantum ever delivered):
+      // the worklet still posts recordComplete so AudioEngine can retire the FIFO
+      // take id, but there is no audio. Bail before materializing an empty clip —
+      // the id has already been shifted upstream in AudioEngine.handleEvent. (Fix #4)
+      if (ev.durationSec <= 0) return
       const nCh = chunks[0]?.length ?? 0
       if (nCh > 0) {
         const channels = Array.from({ length: nCh }, (_, c) => {
@@ -422,8 +435,21 @@ export function useEngine(dispatch: Dispatch<Action>, stateRef: RefObject<AppSta
       enginePromiseRef.current = null
       audioCtxRef.current?.close().catch(() => {})
       audioCtxRef.current = null
+      // mbus lives in refs alongside the engine and was NOT torn down here, so a
+      // subscribed input / active publication kept its bridge socket open past
+      // unmount. Close every subscription, stop publishing, drop the directory
+      // listener and the shared client. Null-safe + idempotent (StrictMode double
+      // unmount, or an unmount before any mbus use). (Fix #8)
+      for (const trackId of [...mbusInputsRef.current.keys()]) closeMbusInput(trackId)
+      mbusPubRef.current?.stop()
+      mbusPubRef.current = null
+      mbusTapRef.current = null
+      mbusSourcesOffRef.current?.()
+      mbusSourcesOffRef.current = null
+      mbusClientRef.current?.disconnect()
+      mbusClientRef.current = null
     }
-  }, [])
+  }, [closeMbusInput])
 
   // Push declarative state whenever the session changes (once audio is live).
   // Each piece is diffed against the last value sent so a drag's per-frame
@@ -577,6 +603,10 @@ export function useEngine(dispatch: Dispatch<Action>, stateRef: RefObject<AppSta
         dispatch({ type: 'SET_TRACK_PARAM', trackId, patch: { armed: true } })
       },
       async chooseInput(trackId: string, kind: TrackInputKind) {
+        // Bump the track's generation up front: any prior in-flight capture for
+        // this track is now stale and must not attach when it finally resolves. (Fix #8)
+        const gen = (inputGenRef.current.get(trackId) ?? 0) + 1
+        inputGenRef.current.set(trackId, gen)
         dispatch({ type: 'SET_TRACK_PARAM', trackId, patch: { input: kind } })
         // Switching away from (or re-selecting) mbus drops the old subscription.
         closeMbusInput(trackId)
@@ -596,6 +626,13 @@ export function useEngine(dispatch: Dispatch<Action>, stateRef: RefObject<AppSta
         if (kind === 'file') return // file input is driven by importFile + a picker
         try {
           const stream = kind === 'tab' ? await e.captureTab() : await e.captureMic()
+          // The acquisition may have resolved after the user switched input again
+          // or the hook unmounted (engineRef nulled / engine swapped). Attaching
+          // now would wire a stale stream or leak a live mic/tab; stop it. (Fix #8)
+          if (inputGenRef.current.get(trackId) !== gen || engineRef.current !== e) {
+            for (const t of stream.getTracks()) t.stop()
+            return
+          }
           e.attachInput(trackId, stream)
         } catch {
           dispatch({ type: 'SET_STATUS', status: kind === 'tab' ? 'Tab capture is Chromium-desktop only.' : 'Microphone access was blocked.' })
@@ -737,5 +774,9 @@ export function useEngine(dispatch: Dispatch<Action>, stateRef: RefObject<AppSta
     // stateRef/posRef/etc are stable refs; dispatch/ensureEngine/gatherSources/persist/loadIntoEngine are memoized.
   }, [dispatch, ensureEngine, gatherSources, persist, stateRef, loadIntoEngine, applyMbusPublish, ensureMbusClient, closeMbusInput])
 
-  return { controls, posRef, meterRef, mbusSources, mbusChoices }
+  // CONTRACT S: expose cached source durations so the UI (App) can size clips /
+  // show lengths without re-decoding. Undefined when the asset isn't resident.
+  const sourceDurationSec = useCallback((audioId: string): number | undefined => sourceCacheRef.current.get(audioId)?.durationSec, [])
+
+  return { controls, posRef, meterRef, mbusSources, mbusChoices, sourceDurationSec }
 }

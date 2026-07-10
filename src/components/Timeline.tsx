@@ -32,9 +32,13 @@ interface TimelineProps {
   controls: UiControls
   dispatch: Dispatch<Action>
   posRef: RefObject<number>
+  /** Total source seconds for a clip's audioId (undefined ⇒ length unknown, no
+   *  trim-out cap). Sourced from the engine so trims can't extend past source.
+   *  Optional: absent ⇒ no cap (the reader still silences any past-source read). */
+  sourceDurationSec?: (audioId: string) => number | undefined
 }
 
-export function Timeline({ state, controls, dispatch, posRef }: TimelineProps): ReactNode {
+export function Timeline({ state, controls, dispatch, posRef, sourceDurationSec = () => undefined }: TimelineProps): ReactNode {
   const { session, selectedTrackId, selectedClipId, snapToBar, showLoopRegion } = state
   const totalSec = contentSec(session)
   const widthPx = totalSec * PX_PER_SEC
@@ -111,6 +115,7 @@ export function Timeline({ state, controls, dispatch, posRef }: TimelineProps): 
                 snapToBar={snapToBar}
                 selectedClipId={selectedTrackId === track.id ? selectedClipId : null}
                 dispatch={dispatch}
+                sourceDurationSec={sourceDurationSec}
               />
             ))}
           </div>
@@ -129,9 +134,10 @@ interface LaneProps {
   snapToBar: boolean
   selectedClipId: string | null
   dispatch: Dispatch<Action>
+  sourceDurationSec: (audioId: string) => number | undefined
 }
 
-function Lane({ track, tempo, timeSignature, snapToBar, selectedClipId, dispatch }: LaneProps): ReactNode {
+function Lane({ track, tempo, timeSignature, snapToBar, selectedClipId, dispatch, sourceDurationSec }: LaneProps): ReactNode {
   return (
     <div className="lane" style={{ height: LANE_HEIGHT, '--track-color': track.color } as CSSProperties}>
       {track.clips.map((clip) => (
@@ -145,6 +151,7 @@ function Lane({ track, tempo, timeSignature, snapToBar, selectedClipId, dispatch
           timeSignature={timeSignature}
           snapToBar={snapToBar}
           dispatch={dispatch}
+          sourceDurationSec={sourceDurationSec}
         />
       ))}
     </div>
@@ -160,9 +167,10 @@ interface ClipViewProps {
   timeSignature: TimeSignature
   snapToBar: boolean
   dispatch: Dispatch<Action>
+  sourceDurationSec: (audioId: string) => number | undefined
 }
 
-function ClipView({ clip, trackId, color, selected, tempo, timeSignature, snapToBar, dispatch }: ClipViewProps): ReactNode {
+function ClipView({ clip, trackId, color, selected, tempo, timeSignature, snapToBar, dispatch, sourceDurationSec }: ClipViewProps): ReactNode {
   // A clip with no in-RAM/stored audio still shows its placement — hatched — so a
   // shared arrangement reads correctly even before the audio is rehydrated.
   const beginDrag = (e: React.PointerEvent, mode: 'move' | 'in' | 'out'): void => {
@@ -189,7 +197,7 @@ function ClipView({ clip, trackId, color, selected, tempo, timeSignature, snapTo
       const dxSec = (ev.clientX - startX) / PX_PER_SEC
       if (mode === 'move') dispatch({ type: 'MOVE_CLIP', trackId, clipId: clip.id, startSec: Math.max(0, snap(origStart + dxSec)) })
       else if (mode === 'in') dispatch({ type: 'TRIM_IN', trackId, clipId: clip.id, newStartSec: Math.max(0, snap(origStart + dxSec)) })
-      else dispatch({ type: 'TRIM_OUT', trackId, clipId: clip.id, newEndSec: snap(origEnd + dxSec) })
+      else dispatch({ type: 'TRIM_OUT', trackId, clipId: clip.id, newEndSec: snap(origEnd + dxSec), maxDurationSec: sourceDurationSec(clip.audioId) })
     }
     // pointercancel (touch interruption / scroll) and lostpointercapture end the
     // drag too — without this the move listener leaked and the clip tracked every

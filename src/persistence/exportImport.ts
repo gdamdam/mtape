@@ -6,7 +6,7 @@
 // their `audioId`, such a bundle importer could rehydrate blobs later; a plain
 // JSON import restores the arrangement with audio shown as missing placeholders.
 
-import { SESSION_SCHEMA_VERSION, sanitizeSession, type Session } from '../audio/contracts'
+import { MAX_IMPORT_BYTES, SESSION_SCHEMA_VERSION, sanitizeSession, type Session } from '../audio/contracts'
 
 export const EXPORT_KIND = 'mtape-session'
 export const EXPORT_VERSION = 1
@@ -45,6 +45,14 @@ export function serializeExport(exported: SessionExport): string {
  * degrades gracefully via sanitizeSession rather than throwing.
  */
 export function parseImport(text: string): Session {
+  // DoS guard: reject a pathologically large document BEFORE JSON.parse builds
+  // its object graph. `text.length` (UTF-16 code units) is a conservative lower
+  // bound on the UTF-8 byte length, so anything over MAX_IMPORT_BYTES is
+  // genuinely oversized while a real session (well under the cap) is untouched.
+  // Same failure contract as the checks below: throw, never silently coerce.
+  if (typeof text !== 'string' || text.length > MAX_IMPORT_BYTES) {
+    throw new Error(`Not a valid mtape session file: input is too large (limit ${MAX_IMPORT_BYTES} bytes).`)
+  }
   let parsed: unknown
   try {
     parsed = JSON.parse(text)

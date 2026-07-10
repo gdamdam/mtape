@@ -121,7 +121,14 @@ export class Biquad {
 
   process(x: number): number {
     const { b0, b1, b2, a1, a2 } = this.c
-    const y = b0 * x + b1 * this.x1 + b2 * this.x2 - a1 * this.y1 - a2 * this.y2
+    let y = b0 * x + b1 * this.x1 + b2 * this.x2 - a1 * this.y1 - a2 * this.y2
+    // Flush the output before it re-enters the feedback state: a non-finite value
+    // (from a corrupt input) must not permanently poison the filter, and a
+    // non-flat band decaying into silence would otherwise drive the feedback
+    // registers into the denormal range — an audio-thread CPU spike. The flushed
+    // value is what we store, so y1/y2 never carry NaN/denormals.
+    if (!Number.isFinite(y)) y = 0
+    else if (y < 1e-25 && y > -1e-25) y = 0
     this.x2 = this.x1
     this.x1 = x
     this.y2 = this.y1

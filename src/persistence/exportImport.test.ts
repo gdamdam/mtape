@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { defaultSession, sanitizeSession, SESSION_SCHEMA_VERSION, type Session } from '../audio/contracts'
+import { defaultSession, MAX_IMPORT_BYTES, sanitizeSession, SESSION_SCHEMA_VERSION, type Session } from '../audio/contracts'
 import { EXPORT_KIND, EXPORT_VERSION, exportSession, parseImport, serializeExport } from './exportImport'
 
 // A representative session with real clip payload so round-trips are meaningful.
@@ -89,6 +89,18 @@ describe('parseImport validation', () => {
   it('throws on a missing exportVersion (undefined !== supported version)', () => {
     const bad = JSON.stringify({ kind: EXPORT_KIND, schemaVersion: SESSION_SCHEMA_VERSION, session: {} })
     expect(() => parseImport(bad)).toThrow(/export version/)
+  })
+
+  it('rejects an oversized document via the same throw contract (DoS guard)', () => {
+    // Just past the cap — an attacker-sized payload must be refused before parse.
+    const huge = 'x'.repeat(MAX_IMPORT_BYTES + 1)
+    expect(() => parseImport(huge)).toThrow(/too large/)
+  })
+
+  it('accepts a normal in-limit session document (round-trips fine)', () => {
+    const text = serializeExport(exportSession(sampleSession()))
+    expect(text.length).toBeLessThanOrEqual(MAX_IMPORT_BYTES)
+    expect(parseImport(text)).toEqual(sanitizeSession(sampleSession()))
   })
 
   it('degrades a garbage inner session to a valid default-ish session (no throw)', () => {
