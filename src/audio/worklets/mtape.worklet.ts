@@ -428,8 +428,15 @@ class MtapeProcessor extends AudioWorkletProcessor {
     }
     this.mPeakL = peakL
     this.mPeakR = peakR
-    this.mSumSq = sumSq
-    this.mFrames += len
+    // Meter only transport-active frames. The master chain itself runs every
+    // quantum (limiter release continuity), but while stopped the bus is silent
+    // — there is no input-monitoring path — so counting those zero frames would
+    // dilute the window RMS right after a stop/start. `playing` also covers
+    // record and count-in, which set it. (F5)
+    if (this.playing) {
+      this.mSumSq = sumSq
+      this.mFrames += len
+    }
   }
 
   private advance(len: number): void {

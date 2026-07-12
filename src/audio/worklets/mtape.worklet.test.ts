@@ -285,6 +285,19 @@ describe('#6 master meters', () => {
     expect(lastMeters(h).masterRms).toBe(0)
   })
 
+  it('does not dilute masterRms with stopped frames inside one metering window (F5)', async () => {
+    const h = await createHarness({ sampleRate: 48000 })
+    h.send({ type: 'loadAudio', audioId: 'a', channels: [new Float32Array(48000).fill(0.5)], sampleRate: 48000 })
+    h.send({ type: 'setArrangement', tracks: [track({ pan: -1, clips: [clip('a')] })] })
+    h.send({ type: 'transport', action: 'play' })
+    runL(h, 4, 128) // 512 played frames — half of the 1024-frame window
+    h.send({ type: 'transport', action: 'stop' })
+    runL(h, 4, 128) // 512 stopped frames complete the window and trigger the post
+    // Only the played half may count: sqrt(0.5^2 / 2ch), not diluted to 0.25 by
+    // the 512 silent stopped frames.
+    expect(lastMeters(h).masterRms).toBeCloseTo(Math.sqrt(0.125), 3)
+  })
+
   for (const SR of [44100, 48000]) {
     for (const Q of [128, 512]) {
       it(`peak/RMS are stable & correct at ${SR}Hz, ${Q}-frame quanta`, async () => {
