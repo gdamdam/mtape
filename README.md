@@ -4,7 +4,7 @@
 
 **Press record on your browser. Arrange what you played. Bounce a song.**
 
-[![version](https://img.shields.io/badge/version-0.2.0-e8a34a)](./package.json)
+[![version](https://img.shields.io/badge/version-0.2.1-e8a34a)](./package.json)
 [![license](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue)](./LICENSE)
 [![tests](https://img.shields.io/badge/tests-313%20passing-2ea043)](#verification)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6?logo=typescript&logoColor=white)](./tsconfig.json)
