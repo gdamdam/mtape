@@ -1,7 +1,7 @@
 {
   "name": "mtape",
   "private": true,
-  "version": "0.2.2",
+  "version": "0.2.3",
   "license": "AGPL-3.0-or-later",
   "description": "mtape — a browser-native multitrack tape recorder and arranger. Press record on your browser. Arrange what you played. Bounce a song.",
   "type": "module",
